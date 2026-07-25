@@ -1,28 +1,18 @@
-# Rova Agent Go Engine Configuration
+# Rova Agent Go Engine Configuration (Non-Sensitive Public Settings)
 
 execution:
-  # Mode: "direct" (Direct Arc RPC via ECDSA private key) or "circle" (Circle Developer Controlled Wallets API)
-  mode: "direct"
-  # Mock mode: true to simulate transactions without broadcasting
+  mode: "direct" # "direct" (Arc RPC ECDSA) or "circle" (Circle Wallets)
   mock_mode: false
 
-circle:
-  api_key: ""
-  entity_secret: ""
-  wallet_id: ""
+ai:
+  provider: "gemini" # "gemini" | "anthropic"
 
 arc:
   rpc_url: "https://testnet.arc.network/rpc"
   chain_id: 5042002
-  private_key: ""
   execution_log_address: "0x58d1e3e11C7a93cb26C371B115f2710aF68d427a"
   usdc_address: "0x3600000000000000000000000000000000000000"
   eurc_address: "0x3600000000000000000000000000000000000001"
-
-whatsapp:
-  verify_token: "rova-secret-verify-token"
-  api_token: ""
-  phone_number_id: ""
 
 server:
   port: "8080"

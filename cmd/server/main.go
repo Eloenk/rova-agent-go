@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
+
 	"syscall"
 	"time"
 
@@ -96,40 +96,6 @@ func main() {
 	http.HandleFunc("/api/agent/executions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(store.ListExecutions())
-	})
-
-	http.HandleFunc("/api/whatsapp/webhook", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			mode := r.URL.Query().Get("hub.mode")
-			token := r.URL.Query().Get("hub.verify_token")
-			challenge := r.URL.Query().Get("hub.challenge")
-
-			if mode == "subscribe" && token == cfg.WhatsAppVerifyToken {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(challenge))
-				return
-			}
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-
-		if r.Method == "POST" {
-			var body struct {
-				From string `json:"from"`
-				Text string `json:"text"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.From != "" {
-				if strings.ToLower(body.Text) == "status" {
-					activeCount := len(store.ListActiveRules())
-					reply := fmt.Sprintf("📊 *Rova Go Agent Status*\n\nActive Rate Watchers: %d\nWallet: `%s`", activeCount, chainClient.Address.Hex())
-					notifier.SendMessage(body.From, reply)
-				}
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "received"})
-			return
-		}
 	})
 
 	serverAddr := ":" + cfg.Port

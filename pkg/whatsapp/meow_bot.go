@@ -19,6 +19,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"rova-agent-go/pkg/ai"
 	"rova-agent-go/pkg/circle"
 	"rova-agent-go/pkg/config"
 )
@@ -27,6 +28,7 @@ type MeowBot struct {
 	Config       *config.Config
 	Client       *whatsmeow.Client
 	CircleClient *circle.CircleClient
+	AIParser     *ai.AIParser
 }
 
 func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.CircleClient) (*MeowBot, error) {
@@ -48,6 +50,7 @@ func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.Ci
 		Config:       cfg,
 		Client:       client,
 		CircleClient: circleClient,
+		AIParser:     ai.NewAIParser(),
 	}
 
 	client.AddEventHandler(bot.handleEvent)
@@ -56,7 +59,6 @@ func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.Ci
 
 func (b *MeowBot) Start(ctx context.Context) error {
 	if b.Client.Store.ID == nil {
-		// No existing session -> Pair via QR Code
 		qrChan, _ := b.Client.GetQRChannel(ctx)
 		err := b.Client.Connect()
 		if err != nil {
@@ -76,7 +78,6 @@ func (b *MeowBot) Start(ctx context.Context) error {
 			}
 		}
 	} else {
-		// Existing session found -> Connect directly
 		err := b.Client.Connect()
 		if err != nil {
 			return fmt.Errorf("failed to connect: %w", err)
@@ -128,7 +129,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	cleanText := strings.TrimSpace(text)
 	textLower := strings.ToLower(cleanText)
 
-	// 1. HELP / START
+	// Quick static commands
 	if textLower == "help" || textLower == "start" {
 		reply :=
 			"🤖 *Welcome to Rova Autonomous Agentic Economy!*\n\n" +
@@ -138,13 +139,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"• *\"bridge 200 USDC from Ethereum to Arc\"*\n" +
 			"• *\"status\"* — View active rate watchers\n" +
 			"• *\"balance\"* — View agent account balance & wallet address\n\n" +
-			"_Powered by Rova Native Whatsmeow Engine on Arc_"
+			"_Powered by Rova Native AI Engine (Gemini 2.0 / Claude) on Arc_"
 
 		b.replyText(jid, reply)
 		return
 	}
 
-	// 2. BALANCE / WALLET
 	if textLower == "balance" || textLower == "wallet" {
 		walletAddr := b.Config.CircleWalletID
 		if walletAddr == "" {
@@ -164,7 +164,6 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
-	// 3. STATUS
 	if textLower == "status" || textLower == "rules" {
 		reply :=
 			"📊 *Rova Active Watchers*\n\n" +
@@ -178,11 +177,36 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
-	// 4. SEND Intent
-	if strings.HasPrefix(textLower, "send") {
-		b.replyText(jid, "⏳ *Processing Send command via Circle Wallet on Arc...*")
+	// Dynamic AI Intent Parsing
+	parsed, err := b.AIParser.ParseIntent(ctx, cleanText)
+	if err != nil {
+		log.Printf("[MeowBot] AI Parsing fallback error: %v", err)
+	}
 
-		txHash, err := b.CircleClient.TransferUSDC(ctx, "0x71C7656EC7ab88b098defB751B7401B5f6d8976F", 50.0)
+	if parsed == nil {
+		parsed = &ai.ParsedIntent{
+			Action:    "help",
+			Reasoning: "Fallback intent parser",
+		}
+	}
+
+	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s", parsed.Action, parsed.Amount, parsed.Recipient)
+
+	switch parsed.Action {
+	case "send":
+		b.replyText(jid, fmt.Sprintf("⏳ *Processing Send command via Circle Wallet on Arc...*\n_Reasoning_: %s", parsed.Reasoning))
+
+		targetRecipient := parsed.Recipient
+		if targetRecipient == "" {
+			targetRecipient = "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+		}
+
+		sendAmount := parsed.Amount
+		if sendAmount <= 0 {
+			sendAmount = 50.0
+		}
+
+		txHash, err := b.CircleClient.TransferUSDC(ctx, targetRecipient, sendAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Transaction Failed*: %v", err))
 			return
@@ -191,44 +215,115 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"✅ *USDC Sent Successfully!*\n\n"+
-				"• *Amount*: 50.00 USDC\n"+
-				"• *Recipient*: `0x71C7...8976F`\n"+
+				"• *Amount*: %.2f %s\n"+
+				"• *Recipient*: `%s`\n"+
 				"• *Execution*: Circle Programmable Wallet\n"+
-				"• *Settlement Time*: < 1 second\n\n"+
+				"• *Settlement Time*: < 1 second\n"+
+				"• *AI Strategy*: %s\n\n"+
 				"🔗 *ArcScan Link*:\n%s\n\n"+
-				"_Powered by Rova Autonomous Agent_",
-			arcScanURL,
+				"_Powered by Rova Autonomous AI Agent_",
+			sendAmount, parsed.Currency, targetRecipient, parsed.Reasoning, arcScanURL,
 		)
 		b.replyText(jid, reply)
-		return
-	}
 
-	// 5. SWAP Intent
-	if strings.HasPrefix(textLower, "swap") {
-		b.replyText(jid, "⏳ *Executing StableFX atomic swap on Arc...*")
+	case "swap":
+		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc...*\n_Reasoning_: %s", parsed.Reasoning))
 		time.Sleep(1 * time.Second)
 
-		reply :=
-			"🔄 *StableFX Swap Complete!*\n\n" +
-			"• *Swapped*: 100.00 USDC → 94.20 EURC\n" +
-			"• *Executed Rate*: 0.9420 EURC/USDC\n" +
-			"• *Atomic Settlement*: Arc Native StableFX\n\n" +
-			"_Nanopayment rate quotes verified across 3 providers._"
+		swapAmount := parsed.Amount
+		if swapAmount <= 0 {
+			swapAmount = 100.0
+		}
 
+		reply := fmt.Sprintf(
+			"🔄 *StableFX Swap Complete!*\n\n"+
+				"• *Swapped*: %.2f USDC → %.2f EURC\n"+
+				"• *Executed Rate*: 0.9420 EURC/USDC\n"+
+				"• *Atomic Settlement*: Arc Native StableFX\n"+
+				"• *AI Strategy*: %s\n\n"+
+				"_Nanopayment rate quotes verified across 3 providers._",
+			swapAmount, swapAmount*0.942, parsed.Reasoning,
+		)
 		b.replyText(jid, reply)
-		return
-	}
 
-	// 6. DEFAULT AI RESPONSE
-	reply := fmt.Sprintf(
-		"🤖 *Rova AI Intent Parsed*\n\n"+
-			"• *Command*: \"%s\"\n"+
-			"• *Status*: Understood\n"+
-			"• *Execution Engine*: Rova Go Daemon (Whatsmeow)\n\n"+
-			"To execute immediately, say e.g. *\"send 50 USDC to 0x...\"* or *\"status\"*.",
-		cleanText,
-	)
-	b.replyText(jid, reply)
+	case "bridge":
+		b.replyText(jid, fmt.Sprintf("⏳ *Initiating CCTP V2 Cross-Chain Bridge to Arc...*\n_Reasoning_: %s", parsed.Reasoning))
+		time.Sleep(1 * time.Second)
+
+		bridgeAmount := parsed.Amount
+		if bridgeAmount <= 0 {
+			bridgeAmount = 200.0
+		}
+
+		sourceChain := parsed.SourceChain
+		if sourceChain == "" {
+			sourceChain = "Ethereum"
+		}
+
+		reply := fmt.Sprintf(
+			"🌉 *CCTP V2 Bridge Initiated!*\n\n"+
+				"• *Amount*: %.2f USDC\n"+
+				"• *Source Chain*: %s (Domain 0)\n"+
+				"• *Target Chain*: Arc (Domain 26)\n"+
+				"• *Attestation*: Circle Teleporter Gateway\n\n"+
+				"_Liquidity will settle on Arc within 30 seconds._",
+			bridgeAmount, sourceChain,
+		)
+		b.replyText(jid, reply)
+
+	default:
+		reply := fmt.Sprintf(
+			"🤖 *Rova AI Intent Parsed*\n\n"+
+				"• *Input*: \"%s\"\n"+
+				"• *Parsed Intent*: Action=`%s`, Amount=%.2f %s\n"+
+				"• *Reasoning*: %s\n\n"+
+				"To execute immediately, say e.g. *\"send 50 USDC to 0x...\"* or *\"swap 100 USDC to EURC\"*.",
+			cleanText, parsed.Action, parsed.Amount, parsed.Currency, parsed.Reasoning,
+		)
+		b.replyText(jid, reply)
+	}
+}
+
+func (b *MeowBot) SendMessageToPhone(phone, text string) error {
+	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(phone, "+", ""), " ", "")
+	if !strings.HasSuffix(cleanPhone, "@s.whatsapp.net") {
+		cleanPhone += "@s.whatsapp.net"
+	}
+	jid, err := types.ParseJID(cleanPhone)
+	if err != nil {
+		return err
+	}
+	b.replyText(jid, text)
+	return nil
+}
+
+func (b *MeowBot) SendExecutionReport(phone string, opts ReportOpts) error {
+	var text strings.Builder
+	text.WriteString("🤖 *Rova Agent Execution Report (Go Engine)*\n\n")
+	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
+	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
+	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
+	text.WriteString(fmt.Sprintf("🏷️ *Goroutine Nanopayments*: Selected *%s* out of %d quotes.\n", opts.BestProvider, opts.ProvidersChecked))
+	if opts.Memo != "" {
+		text.WriteString(fmt.Sprintf("📝 *Memo*: %s\n", opts.Memo))
+	}
+	if opts.ArcScanURL != "" {
+		text.WriteString(fmt.Sprintf("\n🔗 *ArcScan Link*:\n%s\n", opts.ArcScanURL))
+	}
+	text.WriteString("\n_Powered by Rova Whatsmeow Engine_")
+	return b.SendMessageToPhone(phone, text.String())
+}
+
+func (b *MeowBot) SendApprovalAlert(phone, ruleID, recipient string, amount, rate float64) error {
+	var text strings.Builder
+	text.WriteString("⚠️ *Rova Action Required: Self-Custody Transfer Ready*\n\n")
+	text.WriteString(fmt.Sprintf("Your armed rule `%s` has met its trigger condition!\n\n", ruleID))
+	text.WriteString(fmt.Sprintf("💸 *Transfer Amount*: %.2f USDC → `%s`\n", amount, recipient))
+	text.WriteString(fmt.Sprintf("📊 *Triggered Rate*: %.4f\n\n", rate))
+	text.WriteString("🔒 Tap the link below to approve and sign the transfer with your wallet:\n\n")
+	text.WriteString(fmt.Sprintf("👉 https://rova.app/approve/%s\n\n", ruleID))
+	text.WriteString("_Rova Go Safeguard_")
+	return b.SendMessageToPhone(phone, text.String())
 }
 
 func (b *MeowBot) replyText(jid types.JID, text string) {

@@ -13,24 +13,16 @@ type YAMLConfig struct {
 		Mode     string `yaml:"mode"`
 		MockMode bool   `yaml:"mock_mode"`
 	} `yaml:"execution"`
-	Circle struct {
-		APIKey       string `yaml:"api_key"`
-		EntitySecret string `yaml:"entity_secret"`
-		WalletID     string `yaml:"wallet_id"`
-	} `yaml:"circle"`
+	AI struct {
+		Provider string `yaml:"provider"`
+	} `yaml:"ai"`
 	Arc struct {
-		RPCURL               string `yaml:"rpc_url"`
-		ChainID              int64  `yaml:"chain_id"`
-		PrivateKey           string `yaml:"private_key"`
-		ExecutionLogAddress  string `yaml:"execution_log_address"`
-		USDCAddress          string `yaml:"usdc_address"`
-		EURCAddress          string `yaml:"eurc_address"`
+		RPCURL              string `yaml:"rpc_url"`
+		ChainID             int64  `yaml:"chain_id"`
+		ExecutionLogAddress string `yaml:"execution_log_address"`
+		USDCAddress         string `yaml:"usdc_address"`
+		EURCAddress         string `yaml:"eurc_address"`
 	} `yaml:"arc"`
-	WhatsApp struct {
-		VerifyToken   string `yaml:"verify_token"`
-		APIToken      string `yaml:"api_token"`
-		PhoneNumberID string `yaml:"phone_number_id"`
-	} `yaml:"whatsapp"`
 	Server struct {
 		Port string `yaml:"port"`
 	} `yaml:"server"`
@@ -40,6 +32,8 @@ type Config struct {
 	ExecutionMode               string
 	MockMode                    bool
 	Port                        string
+	GoogleGenerativeAIAPIKey    string
+	AnthropicAPIKey             string
 	ArcRPCURL                   string
 	ChainID                     int64
 	PrivateKey                  string
@@ -49,17 +43,13 @@ type Config struct {
 	CircleAPIKey                string
 	CircleEntitySecret          string
 	CircleWalletID              string
-	WhatsAppVerifyToken         string
 	WhatsAppAPIToken            string
 	WhatsAppPhoneNumberID       string
-	TwilioAccountSID            string
-	TwilioAuthToken             string
-	TwilioWhatsAppNumber        string
 }
 
 func LoadConfig() *Config {
-	if err := godotenv.Load(); err != nil {
-		log.Println("[Config] No .env file found, relying on config.yaml and environment")
+	if err := godotenv.Load(".env.local"); err != nil {
+		godotenv.Load(".env")
 	}
 
 	var y YAMLConfig
@@ -72,14 +62,13 @@ func LoadConfig() *Config {
 		log.Println("[Config] No config.yaml found, using defaults")
 	}
 
-	mode := getEnv("EXECUTION_MODE", y.Execution.Mode)
+	mode := y.Execution.Mode
 	if mode == "" {
-		mode = "direct"
+		mode = getEnv("EXECUTION_MODE", "direct")
 	}
 
-	mockStr := getEnv("ROVA_MOCK_MODE", "")
 	mockMode := y.Execution.MockMode
-	if mockStr == "true" {
+	if mockStr := os.Getenv("ROVA_MOCK_MODE"); mockStr == "true" {
 		mockMode = true
 	} else if mockStr == "false" {
 		mockMode = false
@@ -89,21 +78,19 @@ func LoadConfig() *Config {
 		ExecutionMode:               mode,
 		MockMode:                    mockMode,
 		Port:                        getEnv("PORT", fallback(y.Server.Port, "8080")),
+		GoogleGenerativeAIAPIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
+		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		ArcRPCURL:                   getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://testnet.arc.network/rpc")),
 		ChainID:                     fallbackInt(y.Arc.ChainID, 5042002),
-		PrivateKey:                  getEnv("ROVA_AGENT_PRIVATE_KEY", y.Arc.PrivateKey),
+		PrivateKey:                  os.Getenv("ROVA_AGENT_PRIVATE_KEY"),
 		ExecutionLogContractAddress: getEnv("NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS", fallback(y.Arc.ExecutionLogAddress, "0x0000000000000000000000000000000000000000")),
 		USDCContractAddress:         getEnv("ARC_USDC_ADDRESS", fallback(y.Arc.USDCAddress, "0x3600000000000000000000000000000000000000")),
 		EURCContractAddress:         getEnv("ARC_EURC_ADDRESS", fallback(y.Arc.EURCAddress, "0x3600000000000000000000000000000000000001")),
-		CircleAPIKey:                getEnv("CIRCLE_API_KEY", y.Circle.APIKey),
-		CircleEntitySecret:          getEnv("CIRCLE_ENTITY_SECRET", y.Circle.EntitySecret),
-		CircleWalletID:              getEnv("CIRCLE_WALLET_ID", y.Circle.WalletID),
-		WhatsAppVerifyToken:         getEnv("WHATSAPP_VERIFY_TOKEN", fallback(y.WhatsApp.VerifyToken, "rova-secret-verify-token")),
-		WhatsAppAPIToken:            getEnv("WHATSAPP_API_TOKEN", y.WhatsApp.APIToken),
-		WhatsAppPhoneNumberID:       getEnv("WHATSAPP_PHONE_NUMBER_ID", y.WhatsApp.PhoneNumberID),
-		TwilioAccountSID:            getEnv("TWILIO_ACCOUNT_SID", ""),
-		TwilioAuthToken:             getEnv("TWILIO_AUTH_TOKEN", ""),
-		TwilioWhatsAppNumber:        getEnv("TWILIO_WHATSAPP_NUMBER", "+14155238886"),
+		CircleAPIKey:                os.Getenv("CIRCLE_API_KEY"),
+		CircleEntitySecret:          os.Getenv("CIRCLE_ENTITY_SECRET"),
+		CircleWalletID:              os.Getenv("CIRCLE_WALLET_ID"),
+		WhatsAppAPIToken:            os.Getenv("WHATSAPP_API_TOKEN"),
+		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 	}
 }
 
