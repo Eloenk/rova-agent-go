@@ -54,7 +54,7 @@ type CircleTxResponse struct {
 }
 
 func (c *CircleClient) TransferUSDC(ctx context.Context, recipient string, amount float64) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" {
+	if c.Config.MockMode || c.Config.CircleAPIKey == "" || c.Config.CircleWalletID == "" {
 		return fmt.Sprintf("0xcircle_mock_%d", time.Now().UnixNano()), nil
 	}
 
@@ -72,7 +72,7 @@ func (c *CircleClient) TransferUSDC(ctx context.Context, recipient string, amoun
 }
 
 func (c *CircleClient) ExecuteContract(ctx context.Context, contractAddress string, functionSig string, params []interface{}) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" {
+	if c.Config.MockMode || c.Config.CircleAPIKey == "" || c.Config.CircleWalletID == "" {
 		return fmt.Sprintf("0xcircle_exec_mock_%d", time.Now().UnixNano()), nil
 	}
 

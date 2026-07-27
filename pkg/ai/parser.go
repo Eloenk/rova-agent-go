@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"rova-agent-go/pkg/config"
 )
 
 type ParsedIntent struct {
@@ -26,15 +28,34 @@ type ParsedIntent struct {
 }
 
 type AIParser struct {
-	GeminiAPIKey string
-	AnthropicKey string
-	HTTPClient   *http.Client
+	GeminiAPIKey   string
+	AnthropicKey   string
+	AgentRouterKey string
+	Provider       string
+	ModelName      string
+	HTTPClient     *http.Client
 }
 
 func NewAIParser() *AIParser {
+	cfg := config.LoadConfig()
+	return NewAIParserWithConfig(cfg)
+}
+
+func NewAIParserWithConfig(cfg *config.Config) *AIParser {
+	model := cfg.AIModel
+	if model == "" {
+		model = os.Getenv("ROVA_AI_MODEL")
+	}
+	provider := strings.ToLower(cfg.AIProvider)
+	if provider == "" {
+		provider = "auto"
+	}
 	return &AIParser{
-		GeminiAPIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
-		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
+		GeminiAPIKey:   cfg.GoogleGenerativeAIAPIKey,
+		AnthropicKey:   cfg.AnthropicAPIKey,
+		AgentRouterKey: os.Getenv("AGENTROUTER_API_KEY"),
+		Provider:       provider,
+		ModelName:      model,
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -56,27 +77,86 @@ Parse the user's intent into a JSON object matching this exact schema:
 Return ONLY minified valid JSON. No markdown backticks, no markdown text.`
 
 func (p *AIParser) ParseIntent(ctx context.Context, userInput string) (*ParsedIntent, error) {
-	if p.GeminiAPIKey != "" {
-		intent, err := p.callGemini(ctx, userInput)
-		if err == nil && intent != nil {
-			return intent, nil
+	return p.ParseIntentWithFallback(ctx, userInput, false)
+}
+
+func (p *AIParser) ParseIntentWithFallback(ctx context.Context, userInput string, allowRegexFallback bool) (*ParsedIntent, error) {
+	intent, err := p.ParseIntentStrict(ctx, userInput)
+	if err == nil && intent != nil {
+		return intent, nil
+	}
+	if allowRegexFallback {
+		return p.failsafeParse(userInput), nil
+	}
+	return nil, err
+}
+
+func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*ParsedIntent, error) {
+	var errs []string
+	prov := strings.ToLower(p.Provider)
+
+	if prov == "gemini" {
+		if p.GeminiAPIKey == "" {
+			return nil, fmt.Errorf("gemini provider selected in config.yaml but GOOGLE_GENERATIVE_AI_API_KEY is missing")
 		}
+		return p.callGemini(ctx, userInput)
 	}
 
+	if prov == "anthropic" {
+		if p.AnthropicKey == "" {
+			return nil, fmt.Errorf("anthropic provider selected in config.yaml but ANTHROPIC_API_KEY is missing")
+		}
+		return p.callAnthropic(ctx, userInput)
+	}
+
+	if prov == "agentrouter" {
+		return p.callAgentRouter(ctx, userInput)
+	}
+
+	// Provider == "auto" (Failover: Anthropic -> Gemini -> AgentRouter)
 	if p.AnthropicKey != "" {
 		intent, err := p.callAnthropic(ctx, userInput)
 		if err == nil && intent != nil {
 			return intent, nil
 		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("Anthropic API error: %v", err))
+		}
 	}
 
-	return p.failsafeParse(userInput), nil
+	if p.GeminiAPIKey != "" {
+		intent, err := p.callGemini(ctx, userInput)
+		if err == nil && intent != nil {
+			return intent, nil
+		}
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("Gemini API error: %v", err))
+		}
+	}
+
+	intent, err := p.callAgentRouter(ctx, userInput)
+	if err == nil && intent != nil {
+		return intent, nil
+	}
+	if err != nil {
+		errs = append(errs, fmt.Sprintf("AgentRouter API error: %v", err))
+	}
+
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errs, " | "))
+	}
+
+	return nil, fmt.Errorf("AI Agent parsing failed: valid GOOGLE_GENERATIVE_AI_API_KEY, ANTHROPIC_API_KEY, or AGENTROUTER_API_KEY required")
 }
 
 func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", p.GeminiAPIKey)
-	promptText := fmt.Sprintf("%s\n\nUser Input: \"%s\"", systemPrompt, input)
+	modelName := p.ModelName
+	if modelName == "" || modelName == "gemini-2.0-flash" {
+		modelName = "gemini-flash-latest"
+	}
 
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
+	promptText := fmt.Sprintf("%s\n\nUser Input: \"%s\"", systemPrompt, input)
 	reqPayload := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
@@ -97,6 +177,7 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-goog-api-key", p.GeminiAPIKey)
 
 	resp, err := p.HTTPClient.Do(req)
 	if err != nil {
@@ -104,11 +185,11 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 	}
 	defer resp.Body.Close()
 
+	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("gemini API error (%d)", resp.StatusCode)
+		return nil, fmt.Errorf("gemini API error (%d for %s): %s", resp.StatusCode, modelName, string(respBytes))
 	}
 
-	respBytes, _ := io.ReadAll(resp.Body)
 	var geminiRes struct {
 		Candidates []struct {
 			Content struct {
@@ -124,7 +205,7 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 	}
 
 	if len(geminiRes.Candidates) == 0 || len(geminiRes.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("empty response from gemini")
+		return nil, fmt.Errorf("empty response from gemini (%s)", modelName)
 	}
 
 	rawJSON := geminiRes.Candidates[0].Content.Parts[0].Text
@@ -181,6 +262,71 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	}
 
 	return cleanAndUnmarshalJSON(anthropicRes.Content[0].Text)
+}
+
+func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIntent, error) {
+	url := os.Getenv("AGENTROUTER_BASE_URL")
+	if url == "" {
+		url = "https://agentrouter.org/v1/chat/completions"
+	}
+
+	modelToUse := p.ModelName
+	if modelToUse == "" {
+		modelToUse = "claude-sonnet-4-5-20250929"
+	}
+
+	reqPayload := map[string]interface{}{
+		"model": modelToUse,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": input},
+		},
+		"temperature": 0.1,
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if p.AgentRouterKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.AgentRouterKey)
+	}
+
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("agentrouter API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	var agentRouterRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(respBytes, &agentRouterRes); err != nil {
+		return nil, err
+	}
+
+	if len(agentRouterRes.Choices) == 0 {
+		return nil, fmt.Errorf("empty response from agentrouter")
+	}
+
+	return cleanAndUnmarshalJSON(agentRouterRes.Choices[0].Message.Content)
 }
 
 func cleanAndUnmarshalJSON(raw string) (*ParsedIntent, error) {

@@ -1,18 +1,34 @@
-# Rova Agent Go Engine Configuration (Non-Sensitive Public Settings)
-
-execution:
-  mode: "direct" # "direct" (Arc RPC ECDSA) or "circle" (Circle Wallets)
-  mock_mode: false
+# Rova AI & Engine Configuration
 
 ai:
-  provider: "gemini" # "gemini" | "anthropic"
+  # Provider options:
+  #   "gemini"      - Primary Google Generative AI (Requires GOOGLE_GENERATIVE_AI_API_KEY)
+  #   "anthropic"   - Primary Anthropic Claude (Requires ANTHROPIC_API_KEY)
+  #   "agentrouter" - AgentRouter endpoint (https://agentrouter.org/, Optional AGENTROUTER_API_KEY)
+  #   "auto"        - Failover: Anthropic -> Gemini -> AgentRouter
+  provider: "auto"
 
-arc:
-  rpc_url: "https://testnet.arc.network/rpc"
-  chain_id: 5042002
-  execution_log_address: "0x58d1e3e11C7a93cb26C371B115f2710aF68d427a"
-  usdc_address: "0x3600000000000000000000000000000000000000"
-  eurc_address: "0x3600000000000000000000000000000000000001"
+  # Model names (leave blank for automatic provider defaults):
+  #   Gemini options:      "gemini-2.0-flash", "gemini-1.5-pro"
+  #   Anthropic options:   "claude-3-5-sonnet-20240620"
+  #   AgentRouter options: "agent-router"
+  model: "gemini-flash-latest"
 
-server:
-  port: "8080"
+  # Fallback controls:
+  #   Set allow_regex_fallback to true to enable local regex intent parsing when AI APIs are rate-limited.
+  #   Set to false to force PURE AI AGENT parsing ONLY.
+  allow_regex_fallback: false
+
+  # Generation settings
+  temperature: 0.1
+  max_tokens: 8192
+
+database:
+  # Set enabled to true if SUPABASE_URL & SUPABASE_ANON_KEY are configured in .env.local
+  supabase_enabled: true
+
+execution:
+  # mock_mode: false (Production default if flag is missing or set to false)
+  # Set mock_mode: true for local testing without Circle API credentials/live testnet transactions
+  mock_mode: false
+  fallback_to_mock: false

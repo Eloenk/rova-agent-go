@@ -14,7 +14,9 @@ type YAMLConfig struct {
 		MockMode bool   `yaml:"mock_mode"`
 	} `yaml:"execution"`
 	AI struct {
-		Provider string `yaml:"provider"`
+		Provider           string `yaml:"provider"`
+		Model              string `yaml:"model"`
+		AllowRegexFallback bool   `yaml:"allow_regex_fallback"`
 	} `yaml:"ai"`
 	Arc struct {
 		RPCURL              string `yaml:"rpc_url"`
@@ -31,6 +33,9 @@ type YAMLConfig struct {
 type Config struct {
 	ExecutionMode               string
 	MockMode                    bool
+	AllowRegexFallback          bool
+	AIProvider                  string
+	AIModel                     string
 	Port                        string
 	GoogleGenerativeAIAPIKey    string
 	AnthropicAPIKey             string
@@ -48,8 +53,9 @@ type Config struct {
 }
 
 func LoadConfig() *Config {
-	if err := godotenv.Load(".env.local"); err != nil {
-		godotenv.Load(".env")
+	envFiles := []string{".env.local", ".env", "../.env.local", "../.env", "../../rova/.env.local"}
+	for _, file := range envFiles {
+		_ = godotenv.Overload(file)
 	}
 
 	var y YAMLConfig
@@ -77,6 +83,9 @@ func LoadConfig() *Config {
 	return &Config{
 		ExecutionMode:               mode,
 		MockMode:                    mockMode,
+		AllowRegexFallback:          y.AI.AllowRegexFallback,
+		AIProvider:                  fallback(y.AI.Provider, "auto"),
+		AIModel:                     y.AI.Model,
 		Port:                        getEnv("PORT", fallback(y.Server.Port, "8080")),
 		GoogleGenerativeAIAPIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
