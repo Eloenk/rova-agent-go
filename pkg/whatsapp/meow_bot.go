@@ -125,17 +125,18 @@ type supabaseUserRecord struct {
 
 func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
 	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
-		// If Supabase is unconfigured, bypass database check
-		return nil, true
+		log.Printf("[MeowBot] Supabase URL/AnonKey unconfigured. Rejecting unauthenticated access for phone: %s", phone)
+		return nil, false
 	}
 
-	cleanPhone := strings.TrimPrefix(phone, "+")
+	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(phone, "+"), "-", ""), " ", "")
 	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,phone,whatsapp_phone&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
 		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
-		return nil, true
+		log.Printf("[MeowBot] Supabase request creation error: %v", err)
+		return nil, false
 	}
 	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
 	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
@@ -143,20 +144,23 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[MeowBot] Supabase user check error: %v", err)
-		return nil, true
+		log.Printf("[MeowBot] Supabase user check HTTP error: %v", err)
+		return nil, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return nil, true
+		log.Printf("[MeowBot] Supabase user check returned HTTP status %d for phone %s", resp.StatusCode, phone)
+		return nil, false
 	}
 
 	var users []supabaseUserRecord
 	if err := json.NewDecoder(resp.Body).Decode(&users); err == nil && len(users) > 0 {
+		log.Printf("[MeowBot] User lookup for %s: REGISTERED (User ID: %s, Email: %s)", phone, users[0].ID, users[0].Email)
 		return &users[0], true
 	}
 
+	log.Printf("[MeowBot] User lookup for %s: UNREGISTERED (0 records found in Supabase)", phone)
 	return nil, false
 }
 
