@@ -28,6 +28,9 @@ type YAMLConfig struct {
 	Server struct {
 		Port string `yaml:"port"`
 	} `yaml:"server"`
+	App struct {
+		URL string `yaml:"url"`
+	} `yaml:"app"`
 }
 
 type Config struct {
@@ -105,7 +108,7 @@ func LoadConfig() *Config {
 		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
 		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
-		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", "https://rova-web.vercel.app")),
+		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
 	}
 }
 

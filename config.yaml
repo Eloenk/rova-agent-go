@@ -32,3 +32,7 @@ execution:
   # Set mock_mode: true for local testing without Circle API credentials/live testnet transactions
   mock_mode: false
   fallback_to_mock: false
+
+app:
+  url: "https://rova-web.vercel.app"
+
