@@ -148,7 +148,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	if textLower == "balance" || textLower == "wallet" {
 		walletAddr := b.Config.CircleWalletID
 		if walletAddr == "" {
-			walletAddr = "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+			walletAddr = "Unconfigured (Set CIRCLE_WALLET_ID in environment)"
 		}
 
 		reply := fmt.Sprintf(
@@ -194,12 +194,13 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	switch parsed.Action {
 	case "send":
-		b.replyText(jid, fmt.Sprintf("⏳ *Processing Send command via Circle Wallet on Arc...*\n_Reasoning_: %s", parsed.Reasoning))
-
 		targetRecipient := parsed.Recipient
 		if targetRecipient == "" {
-			targetRecipient = "0x71C7656EC7ab88b098defB751B7401B5f6d8976F"
+			b.replyText(jid, "❌ *Recipient Missing*: Please specify a valid destination wallet address (e.g. *\"send 50 USDC to 0x...\"*).")
+			return
 		}
+
+		b.replyText(jid, fmt.Sprintf("⏳ *Processing Send command via Circle Wallet on Arc...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		sendAmount := parsed.Amount
 		if sendAmount <= 0 {

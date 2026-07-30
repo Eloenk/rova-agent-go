@@ -1,11 +1,8 @@
 package whatsapp
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 
 	"rova-agent-go/pkg/config"
@@ -24,60 +21,32 @@ type ReportOpts struct {
 }
 
 type Notifier struct {
-	Config *config.Config
+	Config  *config.Config
+	MeowBot *MeowBot
 }
 
 func NewNotifier(cfg *config.Config) *Notifier {
 	return &Notifier{Config: cfg}
 }
 
+func NewNotifierWithBot(cfg *config.Config, bot *MeowBot) *Notifier {
+	return &Notifier{Config: cfg, MeowBot: bot}
+}
+
 func (n *Notifier) SendMessage(toPhone, text string) error {
-	if n.Config.MockMode || n.Config.WhatsAppAPIToken == "" {
-		log.Printf("[WhatsApp Go Mock Outbound] to=%s:\n%s", toPhone, text)
-		return nil
+	if n.MeowBot != nil {
+		return n.MeowBot.SendMessageToPhone(toPhone, text)
 	}
-
-	cleanPhone := strings.ReplaceAll(toPhone, "+", "")
-	url := fmt.Sprintf("https://graph.facebook.com/v18.0/%s/messages", n.Config.WhatsAppPhoneNumberID)
-
-	payload := map[string]interface{}{
-		"messaging_product": "whatsapp",
-		"recipient_type":     "individual",
-		"to":                cleanPhone,
-		"type":              "text",
-		"text":              map[string]string{"body": text},
-	}
-
-	bodyBytes, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+n.Config.WhatsAppAPIToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("whatsapp API returned status %d", resp.StatusCode)
-	}
-
+	log.Printf("[Whatsmeow Outbound Log] to=%s:\n%s", toPhone, text)
 	return nil
 }
 
 func (n *Notifier) SendExecutionReport(toPhone string, opts ReportOpts) error {
+	if n.MeowBot != nil {
+		return n.MeowBot.SendExecutionReport(toPhone, opts)
+	}
 	var text strings.Builder
-	text.WriteString("🤖 *Rova Agent Execution Report (Go Engine)*\n\n")
+	text.WriteString("🤖 *Rova Agent Execution Report (Whatsmeow Engine)*\n\n")
 	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
 	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
 	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
@@ -91,12 +60,15 @@ func (n *Notifier) SendExecutionReport(toPhone string, opts ReportOpts) error {
 		text.WriteString(fmt.Sprintf("\n🔗 *ArcScan Link*:\n%s\n", opts.ArcScanURL))
 	}
 
-	text.WriteString("\n_Powered by Rova Go Autonomous Agentic Engine_")
+	text.WriteString("\n_Powered by Rova Whatsmeow Engine_")
 
 	return n.SendMessage(toPhone, text.String())
 }
 
 func (n *Notifier) SendApprovalAlert(toPhone, ruleID, recipient string, amount, rate float64) error {
+	if n.MeowBot != nil {
+		return n.MeowBot.SendApprovalAlert(toPhone, ruleID, recipient, amount, rate)
+	}
 	var text strings.Builder
 	text.WriteString("⚠️ *Rova Action Required: Self-Custody Transfer Ready*\n\n")
 	text.WriteString(fmt.Sprintf("Your armed rule `%s` has met its trigger condition!\n\n", ruleID))
@@ -108,3 +80,4 @@ func (n *Notifier) SendApprovalAlert(toPhone, ruleID, recipient string, amount, 
 
 	return n.SendMessage(toPhone, text.String())
 }
+

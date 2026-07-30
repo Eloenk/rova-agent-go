@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"rova-agent-go/pkg/config"
@@ -100,8 +101,13 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
+	apiKey := c.Config.CircleAPIKey
+	if len(strings.Split(apiKey, ":")) == 2 {
+		apiKey = "TEST_API_KEY:" + apiKey
+	}
+
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("X-User-Token", c.Config.CircleEntitySecret)
 
 	resp, err := c.HTTPClient.Do(req)

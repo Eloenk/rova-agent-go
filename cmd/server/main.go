@@ -28,7 +28,7 @@ func main() {
 		log.Fatalf("Fatal error initializing ethclient: %v", err)
 	}
 
-	store := agent.NewStore()
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseAnonKey)
 	shopper := nanopay.NewShopper()
 	notifier := whatsapp.NewNotifier(cfg)
 

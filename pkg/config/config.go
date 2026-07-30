@@ -50,6 +50,8 @@ type Config struct {
 	CircleWalletID              string
 	WhatsAppAPIToken            string
 	WhatsAppPhoneNumberID       string
+	SupabaseURL                 string
+	SupabaseAnonKey             string
 }
 
 func LoadConfig() *Config {
@@ -100,6 +102,8 @@ func LoadConfig() *Config {
 		CircleWalletID:              os.Getenv("CIRCLE_WALLET_ID"),
 		WhatsAppAPIToken:            os.Getenv("WHATSAPP_API_TOKEN"),
 		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
+		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
 	}
 }
 

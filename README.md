@@ -6,7 +6,7 @@ High-performance, 24/7 autonomous backend daemon & native WhatsApp bot engine fo
 
 ## 🌟 Architectural Overview
 
-`rova-agent-go` is the decoupled, 24/7 backend engine for Rova. It handles autonomous rate watching, microsecond nanopayment rate shopping, server-side Circle Programmable Wallet execution, and native WhatsApp chat interaction.
+`rova-agent-go` is the decoupled, 24/7 backend engine for Rova. It handles autonomous rate watching, microsecond nanopayment rate shopping, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -46,7 +46,11 @@ High-performance, 24/7 autonomous backend daemon & native WhatsApp bot engine fo
 
 ## 🚀 Key Modules & Capabilities
 
-### 1. Standalone Native WhatsApp Bot (`cmd/whatsapp-bot/` & `pkg/whatsapp/meow_bot.go`)
+### 1. Conversational Fast-Path (`pkg/ai/parser.go`)
+* **Zero-Latency Greeting Response**: Deterministically catches greetings ("hi", "who are you", "what can you do") before calling external AI providers.
+* **Deterministic Guardrails**: Marks non-financial interactions as non-executable to prevent unauthorized transaction execution.
+
+### 2. Standalone Native WhatsApp Bot (`cmd/whatsapp-bot/` & `pkg/whatsapp/meow_bot.go`)
 * **Pure Go Multi-Device Engine**: Built using `go.mau.fi/whatsmeow` with zero Node.js/npm or external runtime dependencies.
 * **Pure Go SQLite Session Store**: Uses `modernc.org/sqlite` to persist sessions (`rova_whatsapp.db`) without requiring CGO or GCC cross-compilers.
 * **Terminal QR-Code Pairing**: Displays a QR code directly in the terminal via `qrterminal` for instant pairing with any WhatsApp account.
@@ -57,17 +61,17 @@ High-performance, 24/7 autonomous backend daemon & native WhatsApp bot engine fo
   * `swap <amount> USDC to EURC`: Triggers StableFX atomic swaps.
   * `bridge <amount> USDC from <chain> to Arc`: Triggers CCTP V2 cross-chain bridging.
 
-### 2. Circle Entity Secret Generator CLI (`cmd/gen-secret/` & `pkg/circle/secret.go`)
+### 3. Circle Entity Secret Generator CLI (`cmd/gen-secret/` & `pkg/circle/secret.go`)
 * **32-Byte Secret Key Generation**: Uses `crypto/rand` to generate cryptographically secure 64-character hex strings for `CIRCLE_ENTITY_SECRET`.
 * **RSA-OAEP SHA-256 Ciphertext Encryption**: Takes Circle Console's Developer Public Key and outputs the exact base64 ciphertext needed to register entity secrets in Circle Console.
 
-### 3. Circle Developer-Controlled Wallets SDK Client (`pkg/circle/client.go`)
+### 4. Circle Developer-Controlled Wallets SDK Client (`pkg/circle/client.go`)
 * Direct HTTP client handling Circle's Developer-Controlled Wallets API for transfers, contract executions, and HSM transaction signing.
 
-### 4. Microsecond Goroutine Nanopayments (`pkg/nanopay/x402.go`)
+### 5. Microsecond Goroutine Nanopayments (`pkg/nanopay/x402.go`)
 * Executes parallel RFQ quote queries across multiple rate providers simultaneously using Go goroutines (`sync.WaitGroup`) to pick the best rate before every trade.
 
-### 5. Arc Smart Contract Integration (`pkg/chain/`)
+### 6. Arc Smart Contract Integration (`pkg/chain/`)
 * Native `go-ethereum` (`ethclient`) binding supporting EIP-1559 transaction signing on Arc Testnet (Chain ID `5042002`).
 * Direct ABI contract calls to `RovaExecutionLog.sol` for on-chain audit trail recording.
 
@@ -86,6 +90,7 @@ rova-agent-go/
 │       └── main.go
 ├── pkg/
 │   ├── agent/             # 24/7 Ticker Watcher & State Store
+│   ├── ai/                # Intent Parsing & Failsafe Greeting Fast-Path
 │   ├── chain/             # go-ethereum Arc Testnet Client & ERC-20 Bindings
 │   ├── circle/            # Circle Developer-Controlled Wallets & Entity Secret Crypto
 │   ├── config/            # YAML & Environment Configuration Loader
