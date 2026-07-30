@@ -2,8 +2,10 @@ package whatsapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -95,7 +97,8 @@ func (b *MeowBot) Stop() {
 func (b *MeowBot) handleEvent(evt interface{}) {
 	switch v := evt.(type) {
 	case *events.Message:
-		if v.Info.IsFromMe {
+		// Ignore self messages and all WhatsApp group messages
+		if v.Info.IsFromMe || v.Info.IsGroup {
 			return
 		}
 
@@ -107,9 +110,54 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 			return
 		}
 
-		log.Printf("[MeowBot] Inbound message from %s: %s", senderPhone, text)
+		log.Printf("[MeowBot] Inbound 1-on-1 message from %s: %s", senderPhone, text)
 		b.processIncomingCommand(context.Background(), senderJID, senderPhone, text)
 	}
+}
+
+type supabaseUserRecord struct {
+	ID                  string `json:"id"`
+	Email               string `json:"email"`
+	CircleWalletAddress string `json:"circle_wallet_address"`
+	Phone               string `json:"phone"`
+	WhatsAppPhone       string `json:"whatsapp_phone"`
+}
+
+func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+		// If Supabase is unconfigured, bypass database check
+		return nil, true
+	}
+
+	cleanPhone := strings.TrimPrefix(phone, "+")
+	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,phone,whatsapp_phone&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
+		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
+
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return nil, true
+	}
+	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[MeowBot] Supabase user check error: %v", err)
+		return nil, true
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, true
+	}
+
+	var users []supabaseUserRecord
+	if err := json.NewDecoder(resp.Body).Decode(&users); err == nil && len(users) > 0 {
+		return &users[0], true
+	}
+
+	return nil, false
 }
 
 func extractMessageText(msg *waProto.Message) string {
@@ -129,24 +177,53 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	cleanText := strings.TrimSpace(text)
 	textLower := strings.ToLower(cleanText)
 
-	// Quick static commands
-	if textLower == "help" || textLower == "start" {
+	appURL := b.Config.AppURL
+	if appURL == "" {
+		appURL = "https://rova-web.vercel.app"
+	}
+
+	// 1. Check if message is a greeting or introduction
+	isGreeting := textLower == "gm" || textLower == "good morning" || textLower == "gn" || textLower == "good night" ||
+		textLower == "hi" || textLower == "hello" || textLower == "hey" || textLower == "start" || textLower == "help" ||
+		textLower == "who are you" || textLower == "what is rova" || textLower == "what can you do" ||
+		strings.HasPrefix(textLower, "hi ") || strings.HasPrefix(textLower, "hello ") || strings.HasPrefix(textLower, "hey ")
+
+	if isGreeting {
 		reply :=
-			"🤖 *Welcome to Rova Autonomous Agentic Economy!*\n\n" +
-			"You can send natural money commands or arm rate rules directly in this chat:\n\n" +
-			"• *\"send 50 USDC to 0x71C7656...\"*\n" +
+			"👋 *Hello! Welcome to Rova Autonomous Agent!*\n\n" +
+			"I am your AI financial execution agent on Arc Testnet. You can manage your capital flows directly in this chat:\n\n" +
+			"• *\"send 50 USDC to 0x71C7...\"*\n" +
 			"• *\"swap 100 USDC to EURC\"*\n" +
 			"• *\"bridge 200 USDC from Ethereum to Arc\"*\n" +
-			"• *\"status\"* — View active rate watchers\n" +
-			"• *\"balance\"* — View agent account balance & wallet address\n\n" +
-			"_Powered by Rova Native AI Engine (Gemini 2.0 / Claude) on Arc_"
+			"• *\"balance\"* — View account wallet & balances\n" +
+			"• *\"status\"* — View active rate watchers\n\n" +
+			"🌐 *Web Portal*: " + appURL + "\n\n" +
+			"_Powered by Rova Native AI Engine on Arc_"
 
+		b.replyText(jid, reply)
+		return
+	}
+
+	// 2. Authorization Check for unregistered WhatsApp phone numbers
+	userRecord, registered := b.checkUserRegistered(phone)
+	if !registered {
+		reply := fmt.Sprintf(
+			"🔒 *Account Registration Required*\n\n"+
+				"Your WhatsApp number (+%s) is not linked to a Rova account yet.\n\n"+
+				"Please visit our web portal to register or log in with your email:\n"+
+				"👉 *%s*\n\n"+
+				"_Once registered, you can execute automated stablecoin payments directly from WhatsApp!_",
+			phone, appURL,
+		)
 		b.replyText(jid, reply)
 		return
 	}
 
 	if textLower == "balance" || textLower == "wallet" {
 		walletAddr := b.Config.CircleWalletID
+		if userRecord != nil && userRecord.CircleWalletAddress != "" {
+			walletAddr = userRecord.CircleWalletAddress
+		}
 		if walletAddr == "" {
 			walletAddr = "Unconfigured (Set CIRCLE_WALLET_ID in environment)"
 		}
@@ -190,7 +267,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 	}
 
-	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s", parsed.Action, parsed.Amount, parsed.Recipient)
+	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s, Reasoning: %s", parsed.Action, parsed.Amount, parsed.Recipient, parsed.Reasoning)
 
 	switch parsed.Action {
 	case "send":
@@ -273,13 +350,21 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		b.replyText(jid, reply)
 
 	default:
+		// Clean user-facing reply without internal developer debug variables
+		replyReasoning := parsed.Reasoning
+		if replyReasoning == "" || replyReasoning == "Fallback intent parser" {
+			replyReasoning = "I am Rova, your autonomous AI financial agent on Arc Testnet."
+		}
+
 		reply := fmt.Sprintf(
-			"🤖 *Rova AI Intent Parsed*\n\n"+
-				"• *Input*: \"%s\"\n"+
-				"• *Parsed Intent*: Action=`%s`, Amount=%.2f %s\n"+
-				"• *Reasoning*: %s\n\n"+
-				"To execute immediately, say e.g. *\"send 50 USDC to 0x...\"* or *\"swap 100 USDC to EURC\"*.",
-			cleanText, parsed.Action, parsed.Amount, parsed.Currency, parsed.Reasoning,
+			"🤖 *Rova AI Assistant*\n\n"+
+				"%s\n\n"+
+				"You can send natural commands like:\n"+
+				"• *\"send 50 USDC to 0x...\"*\n"+
+				"• *\"swap 100 USDC to EURC\"*\n"+
+				"• *\"bridge 200 USDC from Ethereum\"*\n\n"+
+				"🌐 *Web Portal*: %s",
+			replyReasoning, appURL,
 		)
 		b.replyText(jid, reply)
 	}

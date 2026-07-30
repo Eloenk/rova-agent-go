@@ -52,6 +52,7 @@ type Config struct {
 	WhatsAppPhoneNumberID       string
 	SupabaseURL                 string
 	SupabaseAnonKey             string
+	AppURL                      string
 }
 
 func LoadConfig() *Config {
@@ -104,6 +105,7 @@ func LoadConfig() *Config {
 		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
 		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
+		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", "https://rova-web.vercel.app")),
 	}
 }
 
