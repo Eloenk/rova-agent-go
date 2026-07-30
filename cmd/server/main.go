@@ -38,23 +38,6 @@ func main() {
 	watcher := agent.NewWatcherEngine(store, chainClient, shopper, notifier, 5*time.Second)
 	watcher.StartWatcher(ctx)
 
-	demoRule := &agent.AgentRule{
-		ID:                  "wa-rule-demo-1",
-		CreatedAt:           time.Now(),
-		Status:              agent.StatusActive,
-		RecipientLabel:      "Sister (Remittance)",
-		RecipientIdentifier: "0xfe4f5d1ceeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-		Amount:              100.0,
-		Pair:                "USDC/EURC",
-		TriggerType:         agent.TriggerRateGTE,
-		TriggerValue:        0.940,
-		CustodyMode:         agent.CustodyManaged,
-		SourceWallet:        chainClient.Address.Hex(),
-		NotifyPhone:         "+254712345678",
-		SourceChannel:       "whatsapp",
-	}
-	store.AddRule(demoRule)
-
 	rpcServer := rpc.NewRPCServer(cfg, store, chainClient)
 	http.Handle("/rpc", rpcServer)
 
