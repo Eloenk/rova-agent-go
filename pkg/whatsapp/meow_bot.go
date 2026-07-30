@@ -232,12 +232,11 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	userRecord, registered := b.checkUserRegistered(phone)
 	if !registered {
 		reply := fmt.Sprintf(
-			"🔒 *Account Registration Required*\n\n"+
-				"Your WhatsApp number (+%s) is not linked to a Rova account yet.\n\n"+
-				"Please visit our web portal to register or log in with your email:\n"+
+			"👋 *Hello! Welcome to Rova Autonomous Financial Agent.*\n\n"+
+				"To execute stablecoin payments, atomic swaps, and automated rules directly in this chat, please sign up and activate your WhatsApp line on our web portal:\n\n"+
 				"👉 *%s*\n\n"+
-				"_Once registered, you can execute automated stablecoin payments directly from WhatsApp!_",
-			phone, appURL,
+				"_Once activated on the web portal, your WhatsApp number will be linked instantly!_",
+			appURL,
 		)
 		b.replyText(jid, reply)
 		return
