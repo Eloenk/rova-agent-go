@@ -34,5 +34,5 @@ execution:
   fallback_to_mock: false
 
 app:
-  url: "https://rova-web.vercel.app"
+  url: "https://rovapay.xyz"
 

@@ -160,6 +160,52 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 	return nil, false
 }
 
+func (b *MeowBot) getUserRulesStatus(phone string) string {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+		return "📊 *Rova Active Watchers*\n\n_No active rate rules currently armed._"
+	}
+
+	cleanPhone := strings.TrimPrefix(phone, "+")
+	queryURL := fmt.Sprintf("%s/rest/v1/agent_rules?select=id,pair,trigger_type,trigger_value,amount,status&notify_phone=eq.%%2B%s",
+		b.Config.SupabaseURL, cleanPhone)
+
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return "📊 *Rova Active Watchers*\n\n_No active rate rules currently armed._"
+	}
+	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode >= 400 {
+		return "📊 *Rova Active Watchers*\n\n_No active rate rules currently armed._"
+	}
+	defer resp.Body.Close()
+
+	var rules []struct {
+		ID           string  `json:"id"`
+		Pair         string  `json:"pair"`
+		TriggerType  string  `json:"trigger_type"`
+		TriggerValue float64 `json:"trigger_value"`
+		Amount       float64 `json:"amount"`
+		Status       string  `json:"status"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rules); err == nil && len(rules) > 0 {
+		var sb strings.Builder
+		sb.WriteString("📊 *Rova Active Watchers*\n\n")
+		sb.WriteString(fmt.Sprintf("• *Active Rate Rules*: %d armed\n", len(rules)))
+		for _, r := range rules {
+			sb.WriteString(fmt.Sprintf("  - %.2f USDC (%s %s %.4f)\n", r.Amount, r.Pair, r.TriggerType, r.TriggerValue))
+		}
+		sb.WriteString("\n_Rova is monitoring Arc rates 24/7._")
+		return sb.String()
+	}
+
+	return "📊 *Rova Active Watchers*\n\n_No active rate rules currently armed._\n_You can arm rules on rovapay.xyz or directly in this chat!_"
+}
+
 func extractMessageText(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -179,10 +225,25 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	appURL := b.Config.AppURL
 	if appURL == "" {
-		appURL = "https://rova-web.vercel.app"
+		appURL = "https://rovapay.xyz"
 	}
 
-	// 1. Check if message is a greeting or introduction
+	// 1. Authorization Check: Require registration FIRST before responding to any commands or greetings
+	userRecord, registered := b.checkUserRegistered(phone)
+	if !registered {
+		reply := fmt.Sprintf(
+			"🔒 *Account Registration Required*\n\n"+
+				"Your WhatsApp number (+%s) is not linked to a Rova account yet.\n\n"+
+				"Please visit our web portal to register or log in with your email:\n"+
+				"👉 *%s*\n\n"+
+				"_Once registered, you can execute automated stablecoin payments directly from WhatsApp!_",
+			phone, appURL,
+		)
+		b.replyText(jid, reply)
+		return
+	}
+
+	// 2. Greeting / Welcome message for REGISTERED users only
 	isGreeting := textLower == "gm" || textLower == "good morning" || textLower == "gn" || textLower == "good night" ||
 		textLower == "hi" || textLower == "hello" || textLower == "hey" || textLower == "start" || textLower == "help" ||
 		textLower == "who are you" || textLower == "what is rova" || textLower == "what can you do" ||
@@ -200,21 +261,6 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"🌐 *Web Portal*: " + appURL + "\n\n" +
 			"_Powered by Rova Native AI Engine on Arc_"
 
-		b.replyText(jid, reply)
-		return
-	}
-
-	// 2. Authorization Check for unregistered WhatsApp phone numbers
-	userRecord, registered := b.checkUserRegistered(phone)
-	if !registered {
-		reply := fmt.Sprintf(
-			"🔒 *Account Registration Required*\n\n"+
-				"Your WhatsApp number (+%s) is not linked to a Rova account yet.\n\n"+
-				"Please visit our web portal to register or log in with your email:\n"+
-				"👉 *%s*\n\n"+
-				"_Once registered, you can execute automated stablecoin payments directly from WhatsApp!_",
-			phone, appURL,
-		)
 		b.replyText(jid, reply)
 		return
 	}
@@ -242,14 +288,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	}
 
 	if textLower == "status" || textLower == "rules" {
-		reply :=
-			"📊 *Rova Active Watchers*\n\n" +
-			"• *Active Rate Rules*: 1 armed\n" +
-			"  - 50 USDC → Sister (USDC/EURC ≥ 0.94)\n" +
-			"• *Standing Instructions*: 1 armed\n" +
-			"  - \"Split 200 USDC every Friday\"\n\n" +
-			"_Rova is monitoring Arc rates 24/7._"
-
+		reply := b.getUserRulesStatus(phone)
 		b.replyText(jid, reply)
 		return
 	}
