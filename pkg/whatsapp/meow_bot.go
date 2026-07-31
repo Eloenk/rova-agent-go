@@ -121,6 +121,7 @@ type supabaseUserRecord struct {
 	CircleWalletAddress string `json:"circle_wallet_address"`
 	Phone               string `json:"phone"`
 	WhatsAppPhone       string `json:"whatsapp_phone"`
+	WhatsAppNumber      string `json:"whatsapp_number"`
 }
 
 func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
@@ -130,8 +131,8 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 	}
 
 	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(phone, "+"), "-", ""), " ", "")
-	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,phone,whatsapp_phone&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
-		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
+	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,phone,whatsapp_phone,whatsapp_number&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
+		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
@@ -162,6 +163,85 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 
 	log.Printf("[MeowBot] User lookup for %s: UNREGISTERED (0 records found in Supabase)", phone)
 	return nil, false
+}
+
+func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+		return "", false
+	}
+
+	cleanToken := strings.TrimSpace(token)
+	queryURL := fmt.Sprintf("%s/rest/v1/otp_codes?select=id,email,code,expires_at&code=eq.%s&limit=1",
+		b.Config.SupabaseURL, cleanToken)
+
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode >= 400 {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	var records []struct {
+		ID        string `json:"id"`
+		Email     string `json:"email"`
+		Code      string `json:"code"`
+		ExpiresAt string `json:"expires_at"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&records); err != nil || len(records) == 0 {
+		return "", false
+	}
+
+	record := records[0]
+	if t, err := time.Parse(time.RFC3339, record.ExpiresAt); err == nil {
+		if time.Now().After(t) {
+			log.Printf("[MeowBot] Binding token %s expired at %v", cleanToken, t)
+			return "", false
+		}
+	}
+
+	cleanPhone := strings.TrimPrefix(phone, "+")
+	formattedPhone := "+" + cleanPhone
+
+	// Update Supabase users table for this user email
+	updateBody, _ := json.Marshal(map[string]string{
+		"phone":           formattedPhone,
+		"whatsapp_phone":  formattedPhone,
+		"whatsapp_number": formattedPhone,
+	})
+
+	updateURL := fmt.Sprintf("%s/rest/v1/users?email=eq.%s", b.Config.SupabaseURL, record.Email)
+	patchReq, err := http.NewRequest("PATCH", updateURL, strings.NewReader(string(updateBody)))
+	if err == nil {
+		patchReq.Header.Set("apikey", b.Config.SupabaseAnonKey)
+		patchReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+		patchReq.Header.Set("Content-Type", "application/json")
+		patchReq.Header.Set("Prefer", "return=minimal")
+		if patchResp, err := client.Do(patchReq); err == nil {
+			patchResp.Body.Close()
+		}
+	}
+
+	// Delete used token from otp_codes
+	deleteURL := fmt.Sprintf("%s/rest/v1/otp_codes?id=eq.%s", b.Config.SupabaseURL, record.ID)
+	delReq, err := http.NewRequest("DELETE", deleteURL, nil)
+	if err == nil {
+		delReq.Header.Set("apikey", b.Config.SupabaseAnonKey)
+		delReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+		if delResp, err := client.Do(delReq); err == nil {
+			delResp.Body.Close()
+		}
+	}
+
+	log.Printf("[MeowBot] SUCCESS: Bound phone %s to user %s via token %s", formattedPhone, record.Email, cleanToken)
+	return record.Email, true
 }
 
 func (b *MeowBot) getUserRulesStatus(phone string) string {
@@ -230,6 +310,33 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	appURL := b.Config.AppURL
 	if appURL == "" {
 		appURL = "https://rovapay.xyz"
+	}
+
+	// 0. Dynamic Token Interceptor (Handle LINK-XXXXXX binding tokens BEFORE authorization gate)
+	if strings.HasPrefix(strings.ToUpper(cleanText), "LINK-") {
+		userEmail, bound := b.bindUserWithToken(phone, strings.ToUpper(cleanText))
+		if bound {
+			reply := fmt.Sprintf(
+				"✅ *WhatsApp Line Linked Successfully!*\n\n"+
+					"• *Account Email*: %s\n"+
+					"• *Linked Phone*: +%s\n"+
+					"• *Chain*: Arc Testnet\n\n"+
+					"You can now manage your capital and execute automated rules directly in this chat!\n\n"+
+					"Type *\"balance\"*, *\"status\"*, or *\"send 50 USDC to 0x...\"* to start.",
+				userEmail, phone,
+			)
+			b.replyText(jid, reply)
+			return
+		}
+
+		reply := fmt.Sprintf(
+			"❌ *Verification Token Expired or Invalid*\n\n"+
+				"The token `%s` could not be verified or has expired.\n\n"+
+				"Please open the Rova web portal (*%s*), click *\"Link WhatsApp AI Agent\"*, and tap the new link to bind your line.",
+			cleanText, appURL,
+		)
+		b.replyText(jid, reply)
+		return
 	}
 
 	// 1. Authorization Check: Require registration FIRST before responding to any commands or greetings
