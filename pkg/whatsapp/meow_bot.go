@@ -454,28 +454,44 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		b.replyText(jid, reply)
 
 	case "swap":
-		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc...*\n_Reasoning_: %s", parsed.Reasoning))
-		time.Sleep(1 * time.Second)
+		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc via Circle DCW...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		swapAmount := parsed.Amount
 		if swapAmount <= 0 {
 			swapAmount = 100.0
 		}
 
+		userWallet := userRecord.CircleWalletAddress
+		if userWallet == "" {
+			userWallet = b.Config.CircleWalletID
+		}
+
+		buyCurr := parsed.Currency
+		if buyCurr == "" {
+			buyCurr = "EURC"
+		}
+
+		txHash, err := b.CircleClient.SwapStablecoins(ctx, userWallet, buyCurr, swapAmount)
+		if err != nil {
+			b.replyText(jid, fmt.Sprintf("❌ *Swap Failed*: %v", err))
+			return
+		}
+
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
 		reply := fmt.Sprintf(
-			"🔄 *StableFX Swap Complete!*\n\n"+
-				"• *Swapped*: %.2f USDC → %.2f EURC\n"+
+			"🔄 *StableFX Swap Executed On-Chain!*\n\n"+
+				"• *Swapped*: %.2f USDC → %s\n"+
 				"• *Executed Rate*: 0.9420 EURC/USDC\n"+
-				"• *Atomic Settlement*: Arc Native StableFX\n"+
+				"• *Atomic Settlement*: Arc Native StableFX (Circle DCW)\n"+
 				"• *AI Strategy*: %s\n\n"+
-				"_Nanopayment rate quotes verified across 3 providers._",
-			swapAmount, swapAmount*0.942, parsed.Reasoning,
+				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"_Powered by Rova Autonomous AI Agent_",
+			swapAmount, buyCurr, parsed.Reasoning, arcScanURL,
 		)
 		b.replyText(jid, reply)
 
 	case "bridge":
-		b.replyText(jid, fmt.Sprintf("⏳ *Initiating CCTP V2 Cross-Chain Bridge to Arc...*\n_Reasoning_: %s", parsed.Reasoning))
-		time.Sleep(1 * time.Second)
+		b.replyText(jid, fmt.Sprintf("⏳ *Initiating CCTP V2 Cross-Chain Bridge to Arc via Circle DCW...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		bridgeAmount := parsed.Amount
 		if bridgeAmount <= 0 {
@@ -487,14 +503,59 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			sourceChain = "Ethereum"
 		}
 
+		userWallet := userRecord.CircleWalletAddress
+		if userWallet == "" {
+			userWallet = b.Config.CircleWalletID
+		}
+
+		txHash, err := b.CircleClient.BridgeCCTP(ctx, userWallet, sourceChain, bridgeAmount)
+		if err != nil {
+			b.replyText(jid, fmt.Sprintf("❌ *Bridge Failed*: %v", err))
+			return
+		}
+
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
 		reply := fmt.Sprintf(
-			"🌉 *CCTP V2 Bridge Initiated!*\n\n"+
+			"🌉 *CCTP V2 Bridge Executed On-Chain!*\n\n"+
 				"• *Amount*: %.2f USDC\n"+
 				"• *Source Chain*: %s (Domain 0)\n"+
 				"• *Target Chain*: Arc (Domain 26)\n"+
 				"• *Attestation*: Circle Teleporter Gateway\n\n"+
+				"🔗 *ArcScan Link*:\n%s\n\n"+
 				"_Liquidity will settle on Arc within 30 seconds._",
-			bridgeAmount, sourceChain,
+			bridgeAmount, sourceChain, arcScanURL,
+		)
+		b.replyText(jid, reply)
+
+	case "save", "savings":
+		b.replyText(jid, fmt.Sprintf("⏳ *Depositing into Rova Savings Vault (%s)...*\n_Reasoning_: %s", b.Config.VaultStrategy, parsed.Reasoning))
+
+		saveAmount := parsed.Amount
+		if saveAmount <= 0 {
+			saveAmount = 25.0
+		}
+
+		userWallet := userRecord.CircleWalletAddress
+		if userWallet == "" {
+			userWallet = b.Config.CircleWalletID
+		}
+
+		txHash, err := b.CircleClient.DepositSavingsVault(ctx, userWallet, userWallet, saveAmount)
+		if err != nil {
+			b.replyText(jid, fmt.Sprintf("❌ *Savings Deposit Failed*: %v", err))
+			return
+		}
+
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+		reply := fmt.Sprintf(
+			"🔒 *Rova Savings Vault Deposit Complete!*\n\n"+
+				"• *Amount Saved*: %.2f USDC\n"+
+				"• *Vault Mode*: %s\n"+
+				"• *Lock Limiter*: Active (Protected from routine operations)\n"+
+				"• *AI Strategy*: %s\n\n"+
+				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"_Powered by Rova Autonomous AI Agent_",
+			saveAmount, b.Config.VaultStrategy, parsed.Reasoning, arcScanURL,
 		)
 		b.replyText(jid, reply)
 

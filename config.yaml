@@ -36,3 +36,10 @@ execution:
 app:
   url: "https://rovapay.xyz"
 
+vault:
+  # Vault strategy options:
+  #   "circle_wallet"  - Dedicated secondary Circle SCA Savings Sub-Wallet per user
+  #   "smart_contract" - On-chain Timelocked Storage Vault contract (RovaSavingsVault.sol)
+  strategy: "circle_wallet"
+
+

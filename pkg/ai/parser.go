@@ -65,7 +65,7 @@ func NewAIParserWithConfig(cfg *config.Config) *AIParser {
 const systemPrompt = `You are Rova AI, an autonomous stablecoin execution agent on Arc Testnet (Chain ID 5042002).
 Parse the user's intent into a JSON object matching this exact schema:
 {
-  "action": "send" | "swap" | "bridge" | "rule" | "balance" | "status" | "help",
+  "action": "send" | "swap" | "bridge" | "save" | "rule" | "balance" | "status" | "help",
   "amount": number,
   "currency": "USDC" | "EURC" | "USYC",
   "recipient": "0x... or label",
@@ -399,6 +399,14 @@ func (p *AIParser) failsafeParse(input string) *ParsedIntent {
 		intent.Action = "swap"
 		if intent.Amount == 0 {
 			intent.Amount = 100
+		}
+		return intent
+	}
+
+	if strings.Contains(text, "save") || strings.Contains(text, "savings") || strings.Contains(text, "vault") {
+		intent.Action = "save"
+		if intent.Amount == 0 {
+			intent.Amount = 25
 		}
 		return intent
 	}

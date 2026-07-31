@@ -31,6 +31,9 @@ type YAMLConfig struct {
 	App struct {
 		URL string `yaml:"url"`
 	} `yaml:"app"`
+	Vault struct {
+		Strategy string `yaml:"strategy"`
+	} `yaml:"vault"`
 }
 
 type Config struct {
@@ -56,6 +59,7 @@ type Config struct {
 	SupabaseURL                 string
 	SupabaseAnonKey             string
 	AppURL                      string
+	VaultStrategy               string
 }
 
 func LoadConfig() *Config {
@@ -109,6 +113,7 @@ func LoadConfig() *Config {
 		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
 		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
 		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
+		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "circle_wallet")),
 	}
 }
 
