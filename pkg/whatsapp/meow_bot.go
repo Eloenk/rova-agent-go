@@ -116,12 +116,13 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 }
 
 type supabaseUserRecord struct {
-	ID                  string `json:"id"`
-	Email               string `json:"email"`
-	CircleWalletAddress string `json:"circle_wallet_address"`
-	Phone               string `json:"phone"`
-	WhatsAppPhone       string `json:"whatsapp_phone"`
-	WhatsAppNumber      string `json:"whatsapp_number"`
+	ID                   string `json:"id"`
+	Email                string `json:"email"`
+	CircleWalletAddress  string `json:"circle_wallet_address"`
+	SavingsWalletAddress string `json:"savings_wallet_address"`
+	Phone                string `json:"phone"`
+	WhatsAppPhone        string `json:"whatsapp_phone"`
+	WhatsAppNumber       string `json:"whatsapp_number"`
 }
 
 func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
@@ -131,7 +132,7 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 	}
 
 	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(phone, "+"), "-", ""), " ", "")
-	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,phone,whatsapp_phone,whatsapp_number&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
+	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,savings_wallet_address,phone,whatsapp_phone,whatsapp_number&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
 		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
 
 	req, err := http.NewRequest("GET", queryURL, nil)
@@ -540,7 +541,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			userWallet = b.Config.CircleWalletID
 		}
 
-		txHash, err := b.CircleClient.DepositSavingsVault(ctx, userWallet, userWallet, saveAmount)
+		savingsTarget := userRecord.SavingsWalletAddress
+		if savingsTarget == "" {
+			savingsTarget = userWallet
+		}
+
+		txHash, err := b.CircleClient.DepositSavingsVault(ctx, userWallet, savingsTarget, saveAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Savings Deposit Failed*: %v", err))
 			return
