@@ -40,15 +40,33 @@ type AgentRule struct {
 	SourceChannel       string      `json:"sourceChannel,omitempty"`
 }
 
+type StandingIntentTrigger struct {
+	Type          string `json:"type"` // "on_receive" or "recurring"
+	MinAmountUsdc float64 `json:"minAmountUsdc,omitempty"`
+	Interval      string  `json:"interval,omitempty"`
+}
+
+type StandingIntentPlanStep struct {
+	Action     string  `json:"action"` // "save", "transfer", "swap"
+	Percentage float64 `json:"percentage,omitempty"`
+	Amount     float64 `json:"amount,omitempty"`
+	Recipient  string  `json:"recipient,omitempty"`
+}
+
 type StandingIntent struct {
-	ID           string      `json:"id"`
-	CreatedAt    time.Time   `json:"createdAt"`
-	Status       RuleStatus  `json:"status"`
-	IntentText   string      `json:"intentText"`
-	Interval     string      `json:"interval"`
-	CustodyMode  CustodyMode `json:"custodyMode"`
-	SourceWallet string      `json:"sourceWallet"`
-	NotifyPhone  string      `json:"notifyPhone,omitempty"`
+	ID               string                `json:"id"`
+	CreatedAt        time.Time             `json:"createdAt"`
+	Status           RuleStatus            `json:"status"`
+	IntentText       string                `json:"intentText"`
+	Plan             StandingIntentPlanStep `json:"plan"`
+	Trigger          StandingIntentTrigger  `json:"trigger"`
+	CustodyMode      CustodyMode           `json:"custodyMode"`
+	SourceWallet     string                `json:"sourceWallet"`
+	LastKnownBalance float64               `json:"lastKnownBalance"`
+	LastRunAt        *time.Time            `json:"lastRunAt,omitempty"`
+	RunCount         int                   `json:"runCount"`
+	NotifyPhone      string                `json:"notifyPhone,omitempty"`
+	SourceChannel    string                `json:"sourceChannel,omitempty"`
 }
 
 type QuoteResult struct {

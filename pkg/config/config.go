@@ -18,12 +18,18 @@ type YAMLConfig struct {
 		Model              string `yaml:"model"`
 		AllowRegexFallback bool   `yaml:"allow_regex_fallback"`
 	} `yaml:"ai"`
+	Balance struct {
+		Mode            string `yaml:"mode"`
+		PollIntervalSec int    `yaml:"poll_interval_sec"`
+	} `yaml:"balance"`
 	Arc struct {
-		RPCURL              string `yaml:"rpc_url"`
-		ChainID             int64  `yaml:"chain_id"`
-		ExecutionLogAddress string `yaml:"execution_log_address"`
-		USDCAddress         string `yaml:"usdc_address"`
-		EURCAddress         string `yaml:"eurc_address"`
+		RPCURL              string   `yaml:"rpc_url"`
+		RPCURLs             []string `yaml:"rpc_urls"`
+		WSSURLs             []string `yaml:"wss_urls"`
+		ChainID             int64    `yaml:"chain_id"`
+		ExecutionLogAddress string   `yaml:"execution_log_address"`
+		USDCAddress         string   `yaml:"usdc_address"`
+		EURCAddress         string   `yaml:"eurc_address"`
 	} `yaml:"arc"`
 	Server struct {
 		Port string `yaml:"port"`
@@ -46,6 +52,10 @@ type Config struct {
 	GoogleGenerativeAIAPIKey    string
 	AnthropicAPIKey             string
 	ArcRPCURL                   string
+	ArcRPCURLs                  []string
+	ArcWSSURLs                  []string
+	BalanceMode                 string
+	BalancePollInterval         int
 	ChainID                     int64
 	PrivateKey                  string
 	ExecutionLogContractAddress string
@@ -90,6 +100,24 @@ func LoadConfig() *Config {
 		mockMode = false
 	}
 
+	rpcURLs := y.Arc.RPCURLs
+	if len(rpcURLs) == 0 {
+		defaultRPC := getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://arc-testnet.drpc.org"))
+		rpcURLs = []string{defaultRPC, "https://rpc.testnet.arc.network"}
+	}
+
+	wssURLs := y.Arc.WSSURLs
+	if len(wssURLs) == 0 {
+		defaultWSS := getEnv("ARC_WSS_URL", "wss://arc-testnet.drpc.org/ws")
+		wssURLs = []string{defaultWSS, "wss://wss.testnet.arc.network"}
+	}
+
+	balanceMode := getEnv("ROVA_BALANCE_MODE", fallback(y.Balance.Mode, "wss"))
+	pollInterval := y.Balance.PollIntervalSec
+	if pollInterval <= 0 {
+		pollInterval = 5
+	}
+
 	return &Config{
 		ExecutionMode:               mode,
 		MockMode:                    mockMode,
@@ -99,7 +127,11 @@ func LoadConfig() *Config {
 		Port:                        getEnv("PORT", fallback(y.Server.Port, "8080")),
 		GoogleGenerativeAIAPIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
-		ArcRPCURL:                   getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://testnet.arc.network/rpc")),
+		ArcRPCURL:                   rpcURLs[0],
+		ArcRPCURLs:                  rpcURLs,
+		ArcWSSURLs:                  wssURLs,
+		BalanceMode:                 balanceMode,
+		BalancePollInterval:         pollInterval,
 		ChainID:                     fallbackInt(y.Arc.ChainID, 5042002),
 		PrivateKey:                  os.Getenv("ROVA_AGENT_PRIVATE_KEY"),
 		ExecutionLogContractAddress: getEnv("NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS", fallback(y.Arc.ExecutionLogAddress, "0x0000000000000000000000000000000000000000")),

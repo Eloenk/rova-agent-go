@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/config"
 )
 
@@ -41,9 +42,19 @@ func (n *Notifier) SendMessage(toPhone, text string) error {
 	return nil
 }
 
-func (n *Notifier) SendExecutionReport(toPhone string, opts ReportOpts) error {
+func (n *Notifier) SendExecutionReport(toPhone string, opts agent.NotificationOpts) error {
 	if n.MeowBot != nil {
-		return n.MeowBot.SendExecutionReport(toPhone, opts)
+		return n.MeowBot.SendExecutionReport(toPhone, ReportOpts{
+			Recipient:        opts.Recipient,
+			Amount:           opts.Amount,
+			Pair:             opts.Pair,
+			Rate:             opts.Rate,
+			BestProvider:     opts.BestProvider,
+			ProvidersChecked: opts.ProvidersChecked,
+			TxHash:           opts.TxHash,
+			ArcScanURL:       opts.ArcScanURL,
+			Memo:             opts.Memo,
+		})
 	}
 	var text strings.Builder
 	text.WriteString("🤖 *Rova Agent Execution Report (Whatsmeow Engine)*\n\n")

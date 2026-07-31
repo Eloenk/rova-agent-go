@@ -205,13 +205,129 @@ func (s *Store) UpdateRuleStatus(id string, status RuleStatus) {
 	}
 }
 
+type supabaseStandingIntentDto struct {
+	ID               string                 `json:"id"`
+	CreatedAt        string                 `json:"created_at"`
+	Status           RuleStatus             `json:"status"`
+	IntentText       string                 `json:"intent_text"`
+	Plan             StandingIntentPlanStep `json:"plan"`
+	Trigger          StandingIntentTrigger  `json:"trigger"`
+	CustodyMode      CustodyMode            `json:"custody_mode"`
+	SourceWallet     string                 `json:"source_wallet"`
+	LastKnownBalance float64                `json:"last_known_balance"`
+	LastRunAt        *string                `json:"last_run_at,omitempty"`
+	RunCount         int                    `json:"run_count"`
+	NotifyPhone      string                 `json:"notify_phone,omitempty"`
+	SourceChannel    string                 `json:"source_channel,omitempty"`
+}
+
 func (s *Store) AddStandingIntent(intent *StandingIntent) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.intents[intent.ID] = intent
+	url := s.supabaseURL
+	key := s.supabaseKey
+	s.mu.Unlock()
+
+	if url != "" && key != "" {
+		reqURL := fmt.Sprintf("%s/rest/v1/standing_intents", url)
+		bodyDto := supabaseStandingIntentDto{
+			ID:               intent.ID,
+			CreatedAt:        time.Now().Format(time.RFC3339),
+			Status:           intent.Status,
+			IntentText:       intent.IntentText,
+			Plan:             intent.Plan,
+			Trigger:          intent.Trigger,
+			CustodyMode:      intent.CustodyMode,
+			SourceWallet:     intent.SourceWallet,
+			LastKnownBalance: intent.LastKnownBalance,
+			RunCount:         intent.RunCount,
+			NotifyPhone:      intent.NotifyPhone,
+			SourceChannel:    intent.SourceChannel,
+		}
+		bodyBytes, _ := json.Marshal(bodyDto)
+		req, err := http.NewRequest("POST", reqURL, bytes.NewBuffer(bodyBytes))
+		if err == nil {
+			req.Header.Set("apikey", key)
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := s.httpClient.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+			}
+		}
+	}
+}
+
+func (s *Store) fetchStandingIntentsFromSupabase() ([]*StandingIntent, error) {
+	reqURL := fmt.Sprintf("%s/rest/v1/standing_intents?status=eq.active", s.supabaseURL)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("apikey", s.supabaseKey)
+	req.Header.Set("Authorization", "Bearer "+s.supabaseKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("supabase HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var dtos []supabaseStandingIntentDto
+	if err := json.NewDecoder(resp.Body).Decode(&dtos); err != nil {
+		return nil, err
+	}
+
+	intents := make([]*StandingIntent, 0, len(dtos))
+	for _, d := range dtos {
+		var lastRunAt *time.Time
+		if d.LastRunAt != nil {
+			if t, err := time.Parse(time.RFC3339, *d.LastRunAt); err == nil {
+				lastRunAt = &t
+			}
+		}
+
+		t, _ := time.Parse(time.RFC3339, d.CreatedAt)
+		intents = append(intents, &StandingIntent{
+			ID:               d.ID,
+			CreatedAt:        t,
+			Status:           d.Status,
+			IntentText:       d.IntentText,
+			Plan:             d.Plan,
+			Trigger:          d.Trigger,
+			CustodyMode:      d.CustodyMode,
+			SourceWallet:     d.SourceWallet,
+			LastKnownBalance: d.LastKnownBalance,
+			LastRunAt:        lastRunAt,
+			RunCount:         d.RunCount,
+			NotifyPhone:      d.NotifyPhone,
+			SourceChannel:    d.SourceChannel,
+		})
+	}
+	return intents, nil
 }
 
 func (s *Store) ListActiveStandingIntents() []*StandingIntent {
+	s.mu.RLock()
+	url := s.supabaseURL
+	key := s.supabaseKey
+	s.mu.RUnlock()
+
+	if url != "" && key != "" {
+		intents, err := s.fetchStandingIntentsFromSupabase()
+		if err == nil {
+			return intents
+		}
+		log.Printf("[Store] Supabase standing_intents fetch error: %v", err)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	active := make([]*StandingIntent, 0)
@@ -221,6 +337,39 @@ func (s *Store) ListActiveStandingIntents() []*StandingIntent {
 		}
 	}
 	return active
+}
+
+func (s *Store) UpdateStandingIntentState(id string, lastKnownBalance float64, runCount int, lastRunAt time.Time) {
+	s.mu.Lock()
+	if i, exists := s.intents[id]; exists {
+		i.LastKnownBalance = lastKnownBalance
+		i.RunCount = runCount
+		i.LastRunAt = &lastRunAt
+	}
+	url := s.supabaseURL
+	key := s.supabaseKey
+	s.mu.Unlock()
+
+	if url != "" && key != "" {
+		reqURL := fmt.Sprintf("%s/rest/v1/standing_intents?id=eq.%s", url, id)
+		bodyBytes, _ := json.Marshal(map[string]interface{}{
+			"last_known_balance": lastKnownBalance,
+			"run_count":          runCount,
+			"last_run_at":        lastRunAt.Format(time.RFC3339),
+		})
+		req, err := http.NewRequest("PATCH", reqURL, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return
+		}
+		req.Header.Set("apikey", key)
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := s.httpClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+		}
+	}
 }
 
 func (s *Store) RecordExecution(exec *ExecutionRecord) {

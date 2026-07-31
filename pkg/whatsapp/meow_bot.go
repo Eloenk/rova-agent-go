@@ -21,6 +21,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/ai"
 	"rova-agent-go/pkg/circle"
 	"rova-agent-go/pkg/config"
@@ -529,6 +530,54 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		b.replyText(jid, reply)
 
 	case "save", "savings":
+		// 1. Check if user requested a standing percentage intent (e.g. "always save 10% of every deposit")
+		isStanding := strings.Contains(textLower, "always") || strings.Contains(textLower, "%") ||
+			strings.Contains(textLower, "every") || strings.Contains(textLower, "whenever") || strings.Contains(textLower, "standing")
+
+		if isStanding {
+			pct := 10.0
+			if parsed.Amount > 0 && parsed.Amount <= 100 {
+				pct = parsed.Amount
+			}
+
+			userWallet := userRecord.CircleWalletAddress
+			if userWallet == "" {
+				userWallet = b.Config.CircleWalletID
+			}
+
+			intentID := fmt.Sprintf("intent-%d", time.Now().UnixNano())
+			newIntent := &agent.StandingIntent{
+				ID:           intentID,
+				CreatedAt:    time.Now(),
+				Status:       agent.StatusActive,
+				IntentText:   cleanText,
+				Plan:         agent.StandingIntentPlanStep{Action: "save", Percentage: pct},
+				Trigger:      agent.StandingIntentTrigger{Type: "on_receive", MinAmountUsdc: 0.1},
+				CustodyMode:  agent.CustodyManaged,
+				SourceWallet: userWallet,
+				NotifyPhone:  phone,
+				SourceChannel: "whatsapp",
+			}
+
+			b.getUserRulesStatus(phone) // Ensure store initialized if needed
+			// Save intent to Supabase store
+			store := agent.NewSupabaseStore(b.Config.SupabaseURL, b.Config.SupabaseAnonKey)
+			store.AddStandingIntent(newIntent)
+
+			reply := fmt.Sprintf(
+				"🤖 *Rova Standing Savings Intent Armed!*\n\n"+
+					"• *Rule*: Save %.0f%% of every incoming deposit\n"+
+					"• *Source Wallet*: `%s`\n"+
+					"• *Vault Mode*: %s\n"+
+					"• *Monitoring*: 24/7 Go Daemon Active\n\n"+
+					"_Rova will automatically detect deposits and transfer %.0f%% into your Rova Savings Vault._",
+				pct, userWallet, b.Config.VaultStrategy, pct,
+			)
+			b.replyText(jid, reply)
+			return
+		}
+
+		// 2. Otherwise execute immediate one-off savings deposit
 		b.replyText(jid, fmt.Sprintf("⏳ *Depositing into Rova Savings Vault (%s)...*\n_Reasoning_: %s", b.Config.VaultStrategy, parsed.Reasoning))
 
 		saveAmount := parsed.Amount

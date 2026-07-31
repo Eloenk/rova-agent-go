@@ -42,4 +42,25 @@ vault:
   #   "smart_contract" - On-chain Timelocked Storage Vault contract (RovaSavingsVault.sol)
   strategy: "circle_wallet"
 
+balance:
+  # Balance monitoring mode:
+  #   "wss" - Real-time push WebSocket log subscription (Transfer events)
+  #   "rpc" - Polling via JSON-RPC with multi-endpoint failover
+  mode: "wss"
+  poll_interval_sec: 5
+
+arc:
+  rpc_url: "https://arc-testnet.drpc.org"
+  rpc_urls:
+    - "https://arc-testnet.drpc.org"
+    - "https://rpc.testnet.arc.network"
+  wss_urls:
+    - "wss://arc-testnet.drpc.org/ws"
+    - "wss://wss.testnet.arc.network"
+  chain_id: 5042002
+  execution_log_address: "0x58d1e3e11C7a93cb26C371B115f2710aF68d427a"
+  usdc_address: "0x3600000000000000000000000000000000000000"
+  eurc_address: "0x3600000000000000000000000000000000000001"
+
+
 

@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
+	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -110,4 +113,132 @@ func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, valu
 	}
 
 	return signedTx.Hash().Hex(), nil
+}
+
+func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
+	if walletAddress == "" || !strings.HasPrefix(walletAddress, "0x") || len(walletAddress) < 42 {
+		return 0, fmt.Errorf("invalid wallet address: %s", walletAddress)
+	}
+
+	urls := c.Config.ArcRPCURLs
+	if len(urls) == 0 {
+		urls = []string{c.Config.ArcRPCURL}
+	}
+
+	usdcAddressHex := c.Config.USDCContractAddress
+	if usdcAddressHex == "" {
+		usdcAddressHex = "0x3600000000000000000000000000000000000000"
+	}
+	usdcAddress := common.HexToAddress(usdcAddressHex)
+	targetAddress := common.HexToAddress(walletAddress)
+	data := append(common.Hex2Bytes("70a08231"), common.LeftPadBytes(targetAddress.Bytes(), 32)...)
+
+	var lastErr error
+	for _, rpcUrl := range urls {
+		dialClient, err := ethclient.Dial(rpcUrl)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		res, err := dialClient.CallContract(ctx, ethereum.CallMsg{
+			To:   &usdcAddress,
+			Data: data,
+		}, nil)
+		dialClient.Close()
+
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(res) == 0 {
+			return 0, nil
+		}
+
+		bal := new(big.Int).SetBytes(res)
+		balFloat := new(big.Float).SetInt(bal)
+		decimals := new(big.Float).SetFloat64(1000000.0)
+		resFloat, _ := new(big.Float).Quo(balFloat, decimals).Float64()
+		return resFloat, nil
+	}
+
+	return 0, fmt.Errorf("all RPC endpoints failed, last error: %v", lastErr)
+}
+
+func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer func(toAddress string, amount float64, txHash string)) {
+	wssURLs := c.Config.ArcWSSURLs
+	if len(wssURLs) == 0 {
+		wssURLs = []string{"wss://arc-testnet.drpc.org/ws", "wss://wss.testnet.arc.network"}
+	}
+
+	usdcAddressHex := c.Config.USDCContractAddress
+	if usdcAddressHex == "" {
+		usdcAddressHex = "0x3600000000000000000000000000000000000000"
+	}
+	usdcAddress := common.HexToAddress(usdcAddressHex)
+	transferTopic := crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			for _, wssURL := range wssURLs {
+				log.Printf("[Chain WSS] Connecting to WebSocket log stream: %s", wssURL)
+				client, err := ethclient.DialContext(ctx, wssURL)
+				if err != nil {
+					log.Printf("[Chain WSS] Connection failed for %s: %v", wssURL, err)
+					time.Sleep(2 * time.Second)
+					continue
+				}
+
+				query := ethereum.FilterQuery{
+					Addresses: []common.Address{usdcAddress},
+					Topics:    [][]common.Hash{{transferTopic}},
+				}
+
+				logs := make(chan types.Log)
+				sub, err := client.SubscribeFilterLogs(ctx, query, logs)
+				if err != nil {
+					log.Printf("[Chain WSS] Subscription failed for %s: %v", wssURL, err)
+					client.Close()
+					time.Sleep(2 * time.Second)
+					continue
+				}
+
+				log.Printf("[Chain WSS] Subscribed to real-time USDC Transfer events on %s", wssURL)
+
+				for {
+					select {
+					case <-ctx.Done():
+						sub.Unsubscribe()
+						client.Close()
+						return
+					case err := <-sub.Err():
+						log.Printf("[Chain WSS] Subscription error: %v", err)
+						sub.Unsubscribe()
+						client.Close()
+						goto RECONNECT
+					case vLog := <-logs:
+						if len(vLog.Topics) >= 3 {
+							toAddr := common.BytesToAddress(vLog.Topics[2].Bytes()).Hex()
+							rawAmount := new(big.Int).SetBytes(vLog.Data)
+							balFloat := new(big.Float).SetInt(rawAmount)
+							decimals := new(big.Float).SetFloat64(1000000.0)
+							amount, _ := new(big.Float).Quo(balFloat, decimals).Float64()
+
+							txHash := vLog.TxHash.Hex()
+							log.Printf("[Chain WSS Event] Real-Time USDC Transfer Detected! To: %s, Amount: %.2f USDC, Tx: %s", toAddr, amount, txHash)
+							onTransfer(toAddr, amount, txHash)
+						}
+					}
+				}
+
+			RECONNECT:
+				time.Sleep(2 * time.Second)
+			}
+		}
+	}()
 }
