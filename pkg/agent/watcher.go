@@ -108,7 +108,7 @@ func (w *WatcherEngine) handleWSSTransferEvent(ctx context.Context, toAddress st
 			newRunCount := intent.RunCount + 1
 			w.Store.UpdateStandingIntentState(intent.ID, intent.LastKnownBalance, newRunCount, time.Now())
 
-			arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+			arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 			w.Store.RecordExecution(&ExecutionRecord{
 				ID:         fmt.Sprintf("exec-wss-%d", time.Now().UnixNano()),
 				RuleID:     intent.ID,
@@ -199,7 +199,7 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 			newKnownBalance := balance - saveAmount
 			w.Store.UpdateStandingIntentState(intent.ID, newKnownBalance, newRunCount, time.Now())
 
-			arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+			arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 			w.Store.RecordExecution(&ExecutionRecord{
 				ID:         fmt.Sprintf("exec-intent-%d", time.Now().UnixNano()),
 				RuleID:     intent.ID,

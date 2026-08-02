@@ -377,7 +377,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
-	if textLower == "balance" || textLower == "wallet" {
+	if strings.Contains(textLower, "balance") || strings.Contains(textLower, "wallet") || strings.Contains(textLower, "funds") {
 		walletAddr := b.Config.CircleWalletID
 		if userRecord != nil && userRecord.CircleWalletAddress != "" {
 			walletAddr = userRecord.CircleWalletAddress
@@ -399,7 +399,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
-	if textLower == "status" || textLower == "rules" {
+	if strings.Contains(textLower, "status") || strings.Contains(textLower, "rule") || strings.Contains(textLower, "watcher") || strings.Contains(textLower, "daemon") {
 		reply := b.getUserRulesStatus(phone)
 		b.replyText(jid, reply)
 		return
@@ -421,6 +421,30 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s, Reasoning: %s", parsed.Action, parsed.Amount, parsed.Recipient, parsed.Reasoning)
 
 	switch parsed.Action {
+	case "balance":
+		walletAddr := b.Config.CircleWalletID
+		if userRecord != nil && userRecord.CircleWalletAddress != "" {
+			walletAddr = userRecord.CircleWalletAddress
+		}
+		if walletAddr == "" {
+			walletAddr = "Unconfigured (Set CIRCLE_WALLET_ID in environment)"
+		}
+
+		reply := fmt.Sprintf(
+			"💳 *Rova Agent Account*\n\n"+
+				"• *Phone*: +%s\n"+
+				"• *Circle Wallet*: `%s`\n"+
+				"• *Custody Mode*: Circle Developer-Controlled (HSM)\n"+
+				"• *Chain*: Arc Testnet (Sub-second settlement)\n\n"+
+				"_Send stablecoins to this address to automate execution._",
+			phone, walletAddr,
+		)
+		b.replyText(jid, reply)
+
+	case "status":
+		reply := b.getUserRulesStatus(phone)
+		b.replyText(jid, reply)
+
 	case "send":
 		targetRecipient := parsed.Recipient
 		if targetRecipient == "" {
@@ -441,7 +465,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"✅ *USDC Sent Successfully!*\n\n"+
 				"• *Amount*: %.2f %s\n"+
@@ -479,7 +503,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🔄 *StableFX Swap Executed On-Chain!*\n\n"+
 				"• *Swapped*: %.2f USDC → %s\n"+
@@ -516,7 +540,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🌉 *CCTP V2 Bridge Executed On-Chain!*\n\n"+
 				"• *Amount*: %.2f USDC\n"+
@@ -601,7 +625,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.io/tx/%s", txHash)
+		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🔒 *Rova Savings Vault Deposit Complete!*\n\n"+
 				"• *Amount Saved*: %.2f USDC\n"+
