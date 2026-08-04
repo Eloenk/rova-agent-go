@@ -49,7 +49,6 @@ func main() {
 			"executionMode": cfg.ExecutionMode,
 			"arcChain":      cfg.ChainID,
 			"wallet":        chainClient.Address.Hex(),
-			"mockMode":      cfg.MockMode,
 			"activeRules":   len(store.ListActiveRules()),
 		})
 	})

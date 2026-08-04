@@ -27,12 +27,6 @@ database:
   # Set enabled to true if SUPABASE_URL & SUPABASE_ANON_KEY are configured in .env.local
   supabase_enabled: true
 
-execution:
-  # mock_mode: false (Production default if flag is missing or set to false)
-  # Set mock_mode: true for local testing without Circle API credentials/live testnet transactions
-  mock_mode: false
-  fallback_to_mock: false
-
 app:
   url: "https://rovapay.xyz"
 

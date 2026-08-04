@@ -10,8 +10,7 @@ import (
 
 type YAMLConfig struct {
 	Execution struct {
-		Mode     string `yaml:"mode"`
-		MockMode bool   `yaml:"mock_mode"`
+		Mode string `yaml:"mode"`
 	} `yaml:"execution"`
 	AI struct {
 		Provider           string `yaml:"provider"`
@@ -44,7 +43,6 @@ type YAMLConfig struct {
 
 type Config struct {
 	ExecutionMode               string
-	MockMode                    bool
 	AllowRegexFallback          bool
 	AIProvider                  string
 	AIModel                     string
@@ -93,13 +91,6 @@ func LoadConfig() *Config {
 		mode = getEnv("EXECUTION_MODE", "direct")
 	}
 
-	mockMode := y.Execution.MockMode
-	if mockStr := os.Getenv("ROVA_MOCK_MODE"); mockStr == "true" {
-		mockMode = true
-	} else if mockStr == "false" {
-		mockMode = false
-	}
-
 	rpcURLs := y.Arc.RPCURLs
 	if len(rpcURLs) == 0 {
 		defaultRPC := getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://arc-testnet.drpc.org"))
@@ -120,7 +111,6 @@ func LoadConfig() *Config {
 
 	return &Config{
 		ExecutionMode:               mode,
-		MockMode:                    mockMode,
 		AllowRegexFallback:          y.AI.AllowRegexFallback,
 		AIProvider:                  fallback(y.AI.Provider, "auto"),
 		AIModel:                     y.AI.Model,

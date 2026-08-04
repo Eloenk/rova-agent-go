@@ -47,13 +47,8 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 	}
 
 	// Mode 2: Direct ECDSA RPC transactions
-	if cfg.MockMode || cfg.PrivateKey == "" {
-		return &ChainClient{
-			CircleClient: circleClient,
-			Address:      common.HexToAddress("0x210c024beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
-			ChainID:      big.NewInt(cfg.ChainID),
-			Config:       cfg,
-		}, nil
+	if cfg.PrivateKey == "" {
+		return nil, fmt.Errorf("ROVA_AGENT_PRIVATE_KEY is required for direct RPC execution mode")
 	}
 
 	client, err := ethclient.Dial(cfg.ArcRPCURL)
@@ -86,9 +81,8 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 }
 
 func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, value *big.Int, data []byte) (string, error) {
-	if c.Config.MockMode || c.RPCClient == nil {
-		fakeTxHash := fmt.Sprintf("0xmock%x", crypto.Keccak256(data)[:16])
-		return fakeTxHash, nil
+	if c.RPCClient == nil || c.PrivateKey == nil {
+		return "", fmt.Errorf("RPC client and private key are required to sign and send transactions")
 	}
 
 	nonce, err := c.RPCClient.PendingNonceAt(ctx, c.Address)

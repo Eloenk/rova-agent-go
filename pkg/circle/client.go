@@ -56,14 +56,23 @@ type CircleTxResponse struct {
 }
 
 func (c *CircleClient) TransferUSDC(ctx context.Context, recipient string, amount float64) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" || c.Config.CircleWalletID == "" {
-		return fmt.Sprintf("0xcircle_mock_%d", time.Now().UnixNano()), nil
+	return c.TransferUSDCFromWallet(ctx, c.Config.CircleWalletID, recipient, amount)
+}
+
+func (c *CircleClient) TransferUSDCFromWallet(ctx context.Context, walletID string, recipient string, amount float64) (string, error) {
+	targetWalletID := walletID
+	if targetWalletID == "" {
+		targetWalletID = c.Config.CircleWalletID
+	}
+
+	if c.Config.CircleAPIKey == "" || targetWalletID == "" {
+		return "", fmt.Errorf("Circle API key and Wallet ID are required for live USDC transfer")
 	}
 
 	url := "https://api.circle.com/v1/w3s/developer/transactions/transfer"
 	payload := TransferRequest{
 		IdempotencyKey:  fmt.Sprintf("tx-%d", time.Now().UnixNano()),
-		WalletID:        c.Config.CircleWalletID,
+		WalletID:        targetWalletID,
 		DestinationAddr: recipient,
 		Amount:          []string{fmt.Sprintf("%.6f", amount)},
 		TokenID:         c.Config.USDCContractAddress,
@@ -74,28 +83,33 @@ func (c *CircleClient) TransferUSDC(ctx context.Context, recipient string, amoun
 }
 
 func (c *CircleClient) SwapStablecoins(ctx context.Context, walletAddress string, buyCurrency string, amount float64) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" {
-		return fmt.Sprintf("0xswap_mock_%d", time.Now().UnixNano()), nil
+	return c.SwapStablecoinsWithWallet(ctx, c.Config.CircleWalletID, walletAddress, buyCurrency, amount)
+}
+
+func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID string, walletAddress string, buyCurrency string, amount float64) (string, error) {
+	if c.Config.CircleAPIKey == "" {
+		return "", fmt.Errorf("Circle API key is required for live swap execution")
 	}
 
-	targetToken := "0x3600000000000000000000000000000000000001" // EURC Address on Arc
+	// When swapping USDC -> EURC, the token contract executed by the wallet is USDC
+	sellToken := "0x3600000000000000000000000000000000000000" // USDC Address on Arc
 	if strings.ToUpper(buyCurrency) == "USDC" {
-		targetToken = "0x3600000000000000000000000000000000000000" // USDC Address on Arc
+		sellToken = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a" // EURC Address on Arc
 	}
 
 	amountInt := int64(amount * 1e6)
 	params := []interface{}{walletAddress, fmt.Sprintf("%d", amountInt)}
 
-	txHash, err := c.ExecuteContract(ctx, targetToken, "transfer(address,uint256)", params)
-	if err != nil {
-		return c.TransferUSDC(ctx, walletAddress, amount)
-	}
-	return txHash, nil
+	return c.ExecuteContractWithWallet(ctx, walletID, sellToken, "transfer(address,uint256)", params)
 }
 
 func (c *CircleClient) BridgeCCTP(ctx context.Context, walletAddress string, toChain string, amount float64) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" {
-		return fmt.Sprintf("0xbridge_mock_%d", time.Now().UnixNano()), nil
+	return c.BridgeCCTPWithWallet(ctx, c.Config.CircleWalletID, walletAddress, toChain, amount)
+}
+
+func (c *CircleClient) BridgeCCTPWithWallet(ctx context.Context, walletID string, walletAddress string, toChain string, amount float64) (string, error) {
+	if c.Config.CircleAPIKey == "" {
+		return "", fmt.Errorf("Circle API key is required for live bridge execution")
 	}
 
 	domain := "0" // Ethereum Sepolia
@@ -107,16 +121,12 @@ func (c *CircleClient) BridgeCCTP(ctx context.Context, walletAddress string, toC
 	amountInt := int64(amount * 1e6)
 	params := []interface{}{domain, recipientBytes32, fmt.Sprintf("%d", amountInt), "0x3600000000000000000000000000000000000000"}
 
-	txHash, err := c.ExecuteContract(ctx, "0x9f3b8679c73c2Fef8b59B4f3444d4e156fb70AA5", "depositForBurn(uint64,bytes32,uint256,address)", params)
-	if err != nil {
-		return c.TransferUSDC(ctx, walletAddress, amount)
-	}
-	return txHash, nil
+	return c.ExecuteContractWithWallet(ctx, walletID, "0x9f3b8679c73c2Fef8b59B4f3444d4e156fb70AA5", "depositForBurn(uint64,bytes32,uint256,address)", params)
 }
 
 func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet string, savingsSubWallet string, amount float64) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" {
-		return fmt.Sprintf("0xsavings_mock_%d", time.Now().UnixNano()), nil
+	if c.Config.CircleAPIKey == "" {
+		return "", fmt.Errorf("Circle API key is required for savings vault deposit")
 	}
 
 	strategy := c.Config.VaultStrategy
@@ -129,10 +139,7 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 
 			_, _ = c.ExecuteContract(ctx, tokenAddr, "approve(address,uint256)", []interface{}{vaultAddr, fmt.Sprintf("%d", amountInt)})
 			params := []interface{}{tokenAddr, fmt.Sprintf("%d", amountInt), fmt.Sprintf("%d", lockDuration)}
-			txHash, err := c.ExecuteContract(ctx, vaultAddr, "depositSavings(address,uint256,uint256)", params)
-			if err == nil {
-				return txHash, nil
-			}
+			return c.ExecuteContract(ctx, vaultAddr, "depositSavings(address,uint256,uint256)", params)
 		}
 	}
 
@@ -144,14 +151,23 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 }
 
 func (c *CircleClient) ExecuteContract(ctx context.Context, contractAddress string, functionSig string, params []interface{}) (string, error) {
-	if c.Config.MockMode || c.Config.CircleAPIKey == "" || c.Config.CircleWalletID == "" {
-		return fmt.Sprintf("0xcircle_exec_mock_%d", time.Now().UnixNano()), nil
+	return c.ExecuteContractWithWallet(ctx, c.Config.CircleWalletID, contractAddress, functionSig, params)
+}
+
+func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID string, contractAddress string, functionSig string, params []interface{}) (string, error) {
+	targetWalletID := walletID
+	if targetWalletID == "" {
+		targetWalletID = c.Config.CircleWalletID
+	}
+
+	if c.Config.CircleAPIKey == "" || targetWalletID == "" {
+		return "", fmt.Errorf("Circle API key and Wallet ID are required for live contract execution")
 	}
 
 	url := "https://api.circle.com/v1/w3s/developer/transactions/contractExecution"
 	payload := ContractExecutionRequest{
 		IdempotencyKey:       fmt.Sprintf("exec-%d", time.Now().UnixNano()),
-		WalletID:             c.Config.CircleWalletID,
+		WalletID:             targetWalletID,
 		ContractAddress:      contractAddress,
 		ABIFunctionSignature: functionSig,
 		ABIParameters:        params,

@@ -21,7 +21,7 @@ func main() {
 	}
 
 	cfg := config.LoadConfig()
-	log.Printf("[Main] Config loaded. MockMode=%v, CircleWalletID=%s", cfg.MockMode, cfg.CircleWalletID)
+	log.Printf("[Main] Config loaded. CircleWalletID=%s", cfg.CircleWalletID)
 
 	if err := whatsapp.RunMeowBotService(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running WhatsApp bot service: %v\n", err)

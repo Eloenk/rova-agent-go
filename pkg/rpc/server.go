@@ -88,7 +88,6 @@ func (s *RPCServer) handleMethod(ctx context.Context, method string, params json
 			"executionMode": s.Config.ExecutionMode,
 			"arcChain":      s.Config.ChainID,
 			"wallet":        s.ChainClient.Address.Hex(),
-			"mockMode":      s.Config.MockMode,
 			"activeRules":   len(s.Store.ListActiveRules()),
 		}, nil
 

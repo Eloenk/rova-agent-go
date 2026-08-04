@@ -35,8 +35,8 @@ func (c *ChainClient) TransferUSDC(ctx context.Context, recipient string, amount
 }
 
 func (c *ChainClient) GetUSDCBalance(ctx context.Context, target string) (float64, error) {
-	if c.Config.MockMode || c.RPCClient == nil {
-		return 1250.50, nil
+	if c.RPCClient == nil {
+		return c.GetBalanceUSDCWithFailover(ctx, target)
 	}
 
 	targetAddr := common.HexToAddress(target)
