@@ -133,8 +133,8 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 	}
 
 	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(phone, "+"), "-", ""), " ", "")
-	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,savings_wallet_address,phone,whatsapp_phone,whatsapp_number&or=(whatsapp_phone.eq.%s,whatsapp_phone.eq.%%2B%s,whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s,phone.eq.%s,phone.eq.%%2B%s)",
-		b.Config.SupabaseURL, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone, cleanPhone)
+	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,savings_wallet_address,whatsapp_number&or=(whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s)",
+		b.Config.SupabaseURL, cleanPhone, cleanPhone)
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
@@ -212,10 +212,8 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 	cleanPhone := strings.TrimPrefix(phone, "+")
 	formattedPhone := "+" + cleanPhone
 
-	// Update Supabase users table for this user email
+	// Update Supabase users table for this user email (ONLY use whatsapp_number column)
 	updateBody, _ := json.Marshal(map[string]string{
-		"phone":           formattedPhone,
-		"whatsapp_phone":  formattedPhone,
 		"whatsapp_number": formattedPhone,
 	})
 
@@ -227,6 +225,7 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 		patchReq.Header.Set("Content-Type", "application/json")
 		patchReq.Header.Set("Prefer", "return=minimal")
 		if patchResp, err := client.Do(patchReq); err == nil {
+			log.Printf("[MeowBot] Supabase PATCH response status: %d", patchResp.StatusCode)
 			patchResp.Body.Close()
 		}
 	}
