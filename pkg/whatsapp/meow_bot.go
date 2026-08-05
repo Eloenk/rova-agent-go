@@ -304,9 +304,19 @@ func extractMessageText(msg *waProto.Message) string {
 	return ""
 }
 
+func formatDisplayPhone(phone string) string {
+	clean := strings.TrimSpace(phone)
+	clean = strings.TrimPrefix(clean, "+")
+	if clean == "" {
+		return ""
+	}
+	return "+" + clean
+}
+
 func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, phone, text string) {
 	cleanText := strings.TrimSpace(text)
 	textLower := strings.ToLower(cleanText)
+	displayPhone := formatDisplayPhone(phone)
 
 	appURL := b.Config.AppURL
 	if appURL == "" {
@@ -319,12 +329,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		if bound {
 			reply := fmt.Sprintf(
 				"✅ *WhatsApp Line Linked Successfully!*\n\n"+
-					"• *Account Email*: %s\n"+
-					"• *Linked Phone*: +%s\n"+
-					"• *Chain*: Arc Testnet\n\n"+
-					"You can now manage your capital and execute automated rules directly in this chat!\n\n"+
-					"Type *\"balance\"*, *\"status\"*, or *\"send 50 USDC to 0x...\"* to start.",
-				userEmail, phone,
+					"• *Account*: %s\n"+
+					"• *Phone*: %s\n"+
+					"• *Network*: Arc Testnet\n\n"+
+					"You can now manage your wallet and execute transactions directly in this chat!\n\n"+
+					"Type *\"balance\"*, *\"status\"*, or *\"send 10 USDC to 0x...\"* to start.",
+				userEmail, displayPhone,
 			)
 			b.replyText(jid, reply)
 			return
@@ -342,12 +352,16 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	// 1. Authorization Check: Require registration FIRST before responding to any commands or greetings
 	userRecord, registered := b.checkUserRegistered(phone)
+	if userRecord != nil && userRecord.WhatsAppNumber != "" {
+		displayPhone = formatDisplayPhone(userRecord.WhatsAppNumber)
+	}
+
 	if !registered {
 		reply := fmt.Sprintf(
-			"👋 *Hello! Welcome to Rova Autonomous Financial Agent.*\n\n"+
-				"To execute stablecoin payments, atomic swaps, and automated rules directly in this chat, please sign up and activate your WhatsApp line on our web portal:\n\n"+
+			"👋 *Hello! Welcome to Rova Financial Agent.*\n\n"+
+				"To execute payments, swaps, and automated rules directly in this chat, please sign up and link your WhatsApp line on our web portal:\n\n"+
 				"👉 *%s*\n\n"+
-				"_Once activated on the web portal, your WhatsApp number will be linked instantly!_",
+				"_Once activated on the portal, your WhatsApp line will be linked instantly!_",
 			appURL,
 		)
 		b.replyText(jid, reply)
@@ -362,15 +376,15 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	if isGreeting {
 		reply :=
-			"👋 *Hello! Welcome to Rova Autonomous Agent!*\n\n" +
-			"I am your AI financial execution agent on Arc Testnet. You can manage your capital flows directly in this chat:\n\n" +
-			"• *\"send 50 USDC to 0x71C7...\"*\n" +
+			"👋 *Hello! Welcome to Rova Agent!*\n\n" +
+			"You can manage your funds and automated rules directly in this chat:\n\n" +
+			"• *\"send 50 USDC to 0x...\"*\n" +
 			"• *\"swap 100 USDC to EURC\"*\n" +
 			"• *\"bridge 200 USDC from Ethereum to Arc\"*\n" +
 			"• *\"balance\"* — View account wallet & balances\n" +
 			"• *\"status\"* — View active rate watchers\n\n" +
 			"🌐 *Web Portal*: " + appURL + "\n\n" +
-			"_Powered by Rova Native AI Engine on Arc_"
+			"_Powered by Rova AI Engine_"
 
 		b.replyText(jid, reply)
 		return
@@ -381,18 +395,14 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		if userRecord != nil && userRecord.CircleWalletAddress != "" {
 			walletAddr = userRecord.CircleWalletAddress
 		}
-		if walletAddr == "" {
-			walletAddr = "Unconfigured (Set CIRCLE_WALLET_ID in environment)"
-		}
 
 		reply := fmt.Sprintf(
-			"💳 *Rova Agent Account*\n\n"+
-				"• *Phone*: +%s\n"+
-				"• *Circle Wallet*: `%s`\n"+
-				"• *Custody Mode*: Circle Developer-Controlled (HSM)\n"+
-				"• *Chain*: Arc Testnet (Sub-second settlement)\n\n"+
-				"_Send stablecoins to this address to automate execution._",
-			phone, walletAddr,
+			"💳 *Rova Account Overview*\n\n"+
+				"• *Phone*: %s\n"+
+				"• *Wallet Address*: `%s`\n"+
+				"• *Network*: Arc Testnet\n\n"+
+				"_Deposit USDC or EURC to this address to automate your trading._",
+			displayPhone, walletAddr,
 		)
 		b.replyText(jid, reply)
 		return
@@ -469,17 +479,18 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"✅ *USDC Sent Successfully!*\n\n"+
 				"• *Amount*: %.2f %s\n"+
 				"• *Recipient*: `%s`\n"+
+				"• *Tx Hash*: `%s`\n"+
 				"• *Execution*: Circle Programmable Wallet\n"+
 				"• *Settlement Time*: < 1 second\n"+
 				"• *AI Strategy*: %s\n\n"+
-				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
 				"_Powered by Rova Autonomous AI Agent_",
-			sendAmount, parsed.Currency, targetRecipient, parsed.Reasoning, arcScanURL,
+			sendAmount, parsed.Currency, targetRecipient, txHash, parsed.Reasoning, txHash,
 		)
 		b.replyText(jid, reply)
 
 	case "swap":
-		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc via Circle DCW...*\n_Reasoning_: %s", parsed.Reasoning))
+		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc via Circle Agent Stack...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		swapAmount := parsed.Amount
 		if swapAmount <= 0 {
@@ -507,11 +518,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"🔄 *StableFX Swap Executed On-Chain!*\n\n"+
 				"• *Swapped*: %.2f USDC → %s\n"+
 				"• *Executed Rate*: 0.9420 EURC/USDC\n"+
-				"• *Atomic Settlement*: Arc Native StableFX (Circle DCW)\n"+
+				"• *Tx Hash*: `%s`\n"+
+				"• *Atomic Settlement*: Arc Native StableFX (Circle Agent Stack)\n"+
 				"• *AI Strategy*: %s\n\n"+
-				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
 				"_Powered by Rova Autonomous AI Agent_",
-			swapAmount, buyCurr, parsed.Reasoning, arcScanURL,
+			swapAmount, buyCurr, txHash, parsed.Reasoning, txHash,
 		)
 		b.replyText(jid, reply)
 
@@ -545,10 +557,11 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 				"• *Amount*: %.2f USDC\n"+
 				"• *Source Chain*: %s (Domain 0)\n"+
 				"• *Target Chain*: Arc (Domain 26)\n"+
+				"• *Tx Hash*: `%s`\n"+
 				"• *Attestation*: Circle Teleporter Gateway\n\n"+
-				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
 				"_Liquidity will settle on Arc within 30 seconds._",
-			bridgeAmount, sourceChain, arcScanURL,
+			bridgeAmount, sourceChain, txHash, txHash,
 		)
 		b.replyText(jid, reply)
 
@@ -629,11 +642,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"🔒 *Rova Savings Vault Deposit Complete!*\n\n"+
 				"• *Amount Saved*: %.2f USDC\n"+
 				"• *Vault Mode*: %s\n"+
+				"• *Tx Hash*: `%s`\n"+
 				"• *Lock Limiter*: Active (Protected from routine operations)\n"+
 				"• *AI Strategy*: %s\n\n"+
-				"🔗 *ArcScan Link*:\n%s\n\n"+
+				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
 				"_Powered by Rova Autonomous AI Agent_",
-			saveAmount, b.Config.VaultStrategy, parsed.Reasoning, arcScanURL,
+			saveAmount, b.Config.VaultStrategy, txHash, parsed.Reasoning, txHash,
 		)
 		b.replyText(jid, reply)
 
