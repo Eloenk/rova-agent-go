@@ -35,8 +35,6 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 		var addr common.Address
 		if cfg.CircleWalletID != "" && len(cfg.CircleWalletID) >= 42 && strings.HasPrefix(cfg.CircleWalletID, "0x") {
 			addr = common.HexToAddress(cfg.CircleWalletID)
-		} else {
-			addr = common.HexToAddress("0x210c024beeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
 		}
 		return &ChainClient{
 			CircleClient: circleClient,
