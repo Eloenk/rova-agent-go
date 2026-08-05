@@ -471,32 +471,32 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	switch parsed.Action {
 	case "balance":
 		if boundWallet == "" {
-			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Linked*: Your WhatsApp line (%s) is registered, but no Circle Smart Contract Account (SCA) wallet address is linked.\n\nPlease log in to *%s* to complete wallet provisioning.", displayPhone, appURL))
+			b.replyText(jid, fmt.Sprintf("⚠️ No wallet linked to your account yet.\n\nPlease log in to *%s* to set up your wallet.", appURL))
 			return
 		}
 
-		extraCtx := "Active on Arc Testnet (Chain ID 5042002). Developer-Controlled HSM Custody."
-		aiReply, err := b.AIParser.GenerateConversationalResponse(ctx, "balance", displayPhone, boundWallet, "", extraCtx)
-		if err != nil || strings.TrimSpace(aiReply) == "" {
-			aiReply = fmt.Sprintf(
-				"💳 *Rova Account Overview*\n\n"+
-					"• *Phone*: %s\n"+
-					"• *Circle Wallet*: `%s`\n"+
-					"• *Network*: Arc Testnet\n\n"+
-					"_Deposit USDC or EURC to this address to automate execution._",
-				displayPhone, boundWallet,
-			)
+		chainClient, err := chain.NewChainClient(b.Config)
+		if err != nil {
+			b.replyText(jid, "❌ Unable to fetch balances right now. Please try again shortly.")
+			return
 		}
-		b.replyText(jid, aiReply)
+
+		usdcBal, _ := chainClient.GetBalanceUSDCWithFailover(ctx, boundWallet)
+		eurcBal, _ := chainClient.GetBalanceEURCWithFailover(ctx, boundWallet)
+
+		reply := fmt.Sprintf(
+			"💰 *Your Balances*\n\n"+
+				"• *USDC*: %.2f\n"+
+				"• *EURC*: %.2f\n\n"+
+				"🌐 *Network*: Arc Testnet\n"+
+				"🔗 *Explorer*: https://testnet.arcscan.app/address/%s",
+			usdcBal, eurcBal, boundWallet,
+		)
+		b.replyText(jid, reply)
 
 	case "status":
 		rulesSummary := b.getUserRulesStatus(phone)
-		extraCtx := "WSS event-driven watcher active 24/7 on Arc Testnet."
-		aiReply, err := b.AIParser.GenerateConversationalResponse(ctx, "status", displayPhone, boundWallet, rulesSummary, extraCtx)
-		if err != nil || strings.TrimSpace(aiReply) == "" {
-			aiReply = rulesSummary
-		}
-		b.replyText(jid, aiReply)
+		b.replyText(jid, rulesSummary)
 
 	case "send":
 		if boundWallet == "" {

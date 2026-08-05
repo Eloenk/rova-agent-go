@@ -109,7 +109,7 @@ func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, valu
 	return signedTx.Hash().Hex(), nil
 }
 
-func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
+func (c *ChainClient) GetBalanceERC20WithFailover(ctx context.Context, walletAddress string, tokenAddress string) (float64, error) {
 	if walletAddress == "" || !strings.HasPrefix(walletAddress, "0x") || len(walletAddress) < 42 {
 		return 0, fmt.Errorf("invalid wallet address: %s", walletAddress)
 	}
@@ -119,11 +119,7 @@ func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddr
 		urls = []string{c.Config.ArcRPCURL}
 	}
 
-	usdcAddressHex := c.Config.USDCContractAddress
-	if usdcAddressHex == "" {
-		usdcAddressHex = "0x3600000000000000000000000000000000000000"
-	}
-	usdcAddress := common.HexToAddress(usdcAddressHex)
+	tokenAddr := common.HexToAddress(tokenAddress)
 	targetAddress := common.HexToAddress(walletAddress)
 	data := append(common.Hex2Bytes("70a08231"), common.LeftPadBytes(targetAddress.Bytes(), 32)...)
 
@@ -135,7 +131,7 @@ func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddr
 			continue
 		}
 		res, err := dialClient.CallContract(ctx, ethereum.CallMsg{
-			To:   &usdcAddress,
+			To:   &tokenAddr,
 			Data: data,
 		}, nil)
 		dialClient.Close()
@@ -156,6 +152,22 @@ func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddr
 	}
 
 	return 0, fmt.Errorf("all RPC endpoints failed, last error: %v", lastErr)
+}
+
+func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
+	usdcAddr := c.Config.USDCContractAddress
+	if usdcAddr == "" {
+		usdcAddr = "0x3600000000000000000000000000000000000000"
+	}
+	return c.GetBalanceERC20WithFailover(ctx, walletAddress, usdcAddr)
+}
+
+func (c *ChainClient) GetBalanceEURCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
+	eurcAddr := c.Config.EURCContractAddress
+	if eurcAddr == "" {
+		eurcAddr = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+	}
+	return c.GetBalanceERC20WithFailover(ctx, walletAddress, eurcAddr)
 }
 
 func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWallets func() []string, onTransfer func(toAddress string, amount float64, txHash string)) {
