@@ -132,7 +132,7 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 		return nil, false
 	}
 
-	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(phone, "+"), "-", ""), " ", "")
+	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimLeft(phone, "+"), "-", ""), " ", "")
 	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,savings_wallet_address,whatsapp_number&or=(whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s)",
 		b.Config.SupabaseURL, cleanPhone, cleanPhone)
 
@@ -165,6 +165,61 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 
 	log.Printf("[MeowBot] User lookup for %s: UNREGISTERED (0 records found in Supabase)", phone)
 	return nil, false
+}
+
+func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
+	clean := strings.TrimSpace(recipient)
+	if clean == "" {
+		return "", fmt.Errorf("recipient identifier is empty")
+	}
+
+	if strings.HasPrefix(clean, "0x") && len(clean) == 42 {
+		return clean, nil
+	}
+
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+		return "", fmt.Errorf("database unconfigured; unable to resolve recipient %s", clean)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	var queryURL string
+
+	if strings.Contains(clean, "@") {
+		cleanEmail := strings.ToLower(clean)
+		queryURL = fmt.Sprintf("%s/rest/v1/users?select=circle_wallet_address&email=eq.%s&limit=1",
+			b.Config.SupabaseURL, cleanEmail)
+	} else {
+		cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimLeft(clean, "+"), "-", ""), " ", "")
+		queryURL = fmt.Sprintf("%s/rest/v1/users?select=circle_wallet_address&or=(whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s)&limit=1",
+			b.Config.SupabaseURL, cleanPhone, cleanPhone)
+	}
+
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create query for recipient %s: %v", clean, err)
+	}
+	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("recipient lookup HTTP error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("recipient lookup returned HTTP %d", resp.StatusCode)
+	}
+
+	var users []struct {
+		CircleWalletAddress string `json:"circle_wallet_address"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&users); err == nil && len(users) > 0 && users[0].CircleWalletAddress != "" {
+		return users[0].CircleWalletAddress, nil
+	}
+
+	return "", fmt.Errorf("no registered Rova wallet found for recipient '%s'", clean)
 }
 
 func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
@@ -306,7 +361,7 @@ func extractMessageText(msg *waProto.Message) string {
 
 func formatDisplayPhone(phone string) string {
 	clean := strings.TrimSpace(phone)
-	clean = strings.TrimPrefix(clean, "+")
+	clean = strings.TrimLeft(clean, "+")
 	if clean == "" {
 		return ""
 	}
@@ -390,30 +445,6 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
-	if strings.Contains(textLower, "balance") || strings.Contains(textLower, "wallet") || strings.Contains(textLower, "funds") {
-		walletAddr := b.Config.CircleWalletID
-		if userRecord != nil && userRecord.CircleWalletAddress != "" {
-			walletAddr = userRecord.CircleWalletAddress
-		}
-
-		reply := fmt.Sprintf(
-			"💳 *Rova Account Overview*\n\n"+
-				"• *Phone*: %s\n"+
-				"• *Wallet Address*: `%s`\n"+
-				"• *Network*: Arc Testnet\n\n"+
-				"_Deposit USDC or EURC to this address to automate your trading._",
-			displayPhone, walletAddr,
-		)
-		b.replyText(jid, reply)
-		return
-	}
-
-	if strings.Contains(textLower, "status") || strings.Contains(textLower, "rule") || strings.Contains(textLower, "watcher") || strings.Contains(textLower, "daemon") {
-		reply := b.getUserRulesStatus(phone)
-		b.replyText(jid, reply)
-		return
-	}
-
 	// Dynamic AI Intent Parsing
 	parsed, err := b.AIParser.ParseIntent(ctx, cleanText)
 	if err != nil {
@@ -429,35 +460,57 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s, Reasoning: %s", parsed.Action, parsed.Amount, parsed.Recipient, parsed.Reasoning)
 
+	// Zero-fallback wallet resolution requirement check
+	boundWallet := ""
+	if userRecord != nil {
+		boundWallet = userRecord.CircleWalletAddress
+	}
+
 	switch parsed.Action {
 	case "balance":
-		walletAddr := b.Config.CircleWalletID
-		if userRecord != nil && userRecord.CircleWalletAddress != "" {
-			walletAddr = userRecord.CircleWalletAddress
-		}
-		if walletAddr == "" {
-			walletAddr = "Unconfigured (Set CIRCLE_WALLET_ID in environment)"
+		if boundWallet == "" {
+			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Linked*: Your WhatsApp line (%s) is registered, but no Circle Smart Contract Account (SCA) wallet address is linked.\n\nPlease log in to *%s* to complete wallet provisioning.", displayPhone, appURL))
+			return
 		}
 
-		reply := fmt.Sprintf(
-			"💳 *Rova Agent Account*\n\n"+
-				"• *Phone*: +%s\n"+
-				"• *Circle Wallet*: `%s`\n"+
-				"• *Custody Mode*: Circle Developer-Controlled (HSM)\n"+
-				"• *Chain*: Arc Testnet (Sub-second settlement)\n\n"+
-				"_Send stablecoins to this address to automate execution._",
-			phone, walletAddr,
-		)
-		b.replyText(jid, reply)
+		extraCtx := "Active on Arc Testnet (Chain ID 5042002). Developer-Controlled HSM Custody."
+		aiReply, err := b.AIParser.GenerateConversationalResponse(ctx, "balance", displayPhone, boundWallet, "", extraCtx)
+		if err != nil || strings.TrimSpace(aiReply) == "" {
+			aiReply = fmt.Sprintf(
+				"💳 *Rova Account Overview*\n\n"+
+					"• *Phone*: %s\n"+
+					"• *Circle Wallet*: `%s`\n"+
+					"• *Network*: Arc Testnet\n\n"+
+					"_Deposit USDC or EURC to this address to automate execution._",
+				displayPhone, boundWallet,
+			)
+		}
+		b.replyText(jid, aiReply)
 
 	case "status":
-		reply := b.getUserRulesStatus(phone)
-		b.replyText(jid, reply)
+		rulesSummary := b.getUserRulesStatus(phone)
+		extraCtx := "WSS event-driven watcher active 24/7 on Arc Testnet."
+		aiReply, err := b.AIParser.GenerateConversationalResponse(ctx, "status", displayPhone, boundWallet, rulesSummary, extraCtx)
+		if err != nil || strings.TrimSpace(aiReply) == "" {
+			aiReply = rulesSummary
+		}
+		b.replyText(jid, aiReply)
 
 	case "send":
+		if boundWallet == "" {
+			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Bound*: Unable to send funds because no wallet is linked to %s. Please connect your wallet on *%s*.", displayPhone, appURL))
+			return
+		}
+
 		targetRecipient := parsed.Recipient
 		if targetRecipient == "" {
-			b.replyText(jid, "❌ *Recipient Missing*: Please specify a valid destination wallet address (e.g. *\"send 50 USDC to 0x...\"*).")
+			b.replyText(jid, "❌ *Recipient Missing*: Please specify a valid destination wallet address, email, or phone number (e.g. *\"send 50 USDC to user@example.com\"*).")
+			return
+		}
+
+		resolvedWallet, err := b.resolveRecipientAddress(targetRecipient)
+		if err != nil {
+			b.replyText(jid, fmt.Sprintf("❌ *Recipient Resolution Failed*: %v\n\n_Ask them to sign up on %s to activate their wallet!_", err, appURL))
 			return
 		}
 
@@ -468,28 +521,32 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			sendAmount = 50.0
 		}
 
-		txHash, err := b.CircleClient.TransferUSDC(ctx, targetRecipient, sendAmount)
+		txHash, err := b.CircleClient.TransferUSDC(ctx, resolvedWallet, sendAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Transaction Failed*: %v", err))
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"✅ *USDC Sent Successfully!*\n\n"+
 				"• *Amount*: %.2f %s\n"+
-				"• *Recipient*: `%s`\n"+
+				"• *Recipient*: `%s` (%s)\n"+
 				"• *Tx Hash*: `%s`\n"+
 				"• *Execution*: Circle Programmable Wallet\n"+
 				"• *Settlement Time*: < 1 second\n"+
 				"• *AI Strategy*: %s\n\n"+
 				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
 				"_Powered by Rova Autonomous AI Agent_",
-			sendAmount, parsed.Currency, targetRecipient, txHash, parsed.Reasoning, txHash,
+			sendAmount, parsed.Currency, resolvedWallet, targetRecipient, txHash, parsed.Reasoning, txHash,
 		)
 		b.replyText(jid, reply)
 
 	case "swap":
+		if boundWallet == "" {
+			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Bound*: Unable to swap because no wallet is linked to %s. Please connect your wallet on *%s*.", displayPhone, appURL))
+			return
+		}
+
 		b.replyText(jid, fmt.Sprintf("⏳ *Executing StableFX atomic swap on Arc via Circle Agent Stack...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		swapAmount := parsed.Amount
@@ -497,23 +554,17 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			swapAmount = 100.0
 		}
 
-		userWallet := userRecord.CircleWalletAddress
-		if userWallet == "" {
-			userWallet = b.Config.CircleWalletID
-		}
-
 		buyCurr := parsed.Currency
 		if buyCurr == "" {
 			buyCurr = "EURC"
 		}
 
-		txHash, err := b.CircleClient.SwapStablecoins(ctx, userWallet, buyCurr, swapAmount)
+		txHash, err := b.CircleClient.SwapStablecoins(ctx, boundWallet, buyCurr, swapAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Swap Failed*: %v", err))
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🔄 *StableFX Swap Executed On-Chain!*\n\n"+
 				"• *Swapped*: %.2f USDC → %s\n"+
@@ -528,6 +579,11 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		b.replyText(jid, reply)
 
 	case "bridge":
+		if boundWallet == "" {
+			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Bound*: Unable to bridge because no wallet is linked to %s. Please connect your wallet on *%s*.", displayPhone, appURL))
+			return
+		}
+
 		b.replyText(jid, fmt.Sprintf("⏳ *Initiating CCTP V2 Cross-Chain Bridge to Arc via Circle DCW...*\n_Reasoning_: %s", parsed.Reasoning))
 
 		bridgeAmount := parsed.Amount
@@ -540,18 +596,12 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			sourceChain = "Ethereum"
 		}
 
-		userWallet := userRecord.CircleWalletAddress
-		if userWallet == "" {
-			userWallet = b.Config.CircleWalletID
-		}
-
-		txHash, err := b.CircleClient.BridgeCCTP(ctx, userWallet, sourceChain, bridgeAmount)
+		txHash, err := b.CircleClient.BridgeCCTP(ctx, boundWallet, sourceChain, bridgeAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Bridge Failed*: %v", err))
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🌉 *CCTP V2 Bridge Executed On-Chain!*\n\n"+
 				"• *Amount*: %.2f USDC\n"+
@@ -566,6 +616,11 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		b.replyText(jid, reply)
 
 	case "save", "savings":
+		if boundWallet == "" {
+			b.replyText(jid, fmt.Sprintf("⚠️ *Wallet Not Bound*: Unable to manage savings because no wallet is linked to %s. Please connect your wallet on *%s*.", displayPhone, appURL))
+			return
+		}
+
 		// 1. Check if user requested a standing percentage intent (e.g. "always save 10% of every deposit")
 		isStanding := strings.Contains(textLower, "always") || strings.Contains(textLower, "%") ||
 			strings.Contains(textLower, "every") || strings.Contains(textLower, "whenever") || strings.Contains(textLower, "standing")
@@ -576,22 +631,17 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 				pct = parsed.Amount
 			}
 
-			userWallet := userRecord.CircleWalletAddress
-			if userWallet == "" {
-				userWallet = b.Config.CircleWalletID
-			}
-
 			intentID := fmt.Sprintf("intent-%d", time.Now().UnixNano())
 			newIntent := &agent.StandingIntent{
-				ID:           intentID,
-				CreatedAt:    time.Now(),
-				Status:       agent.StatusActive,
-				IntentText:   cleanText,
-				Plan:         agent.StandingIntentPlanStep{Action: "save", Percentage: pct},
-				Trigger:      agent.StandingIntentTrigger{Type: "on_receive", MinAmountUsdc: 0.1},
-				CustodyMode:  agent.CustodyManaged,
-				SourceWallet: userWallet,
-				NotifyPhone:  phone,
+				ID:            intentID,
+				CreatedAt:     time.Now(),
+				Status:        agent.StatusActive,
+				IntentText:    cleanText,
+				Plan:          agent.StandingIntentPlanStep{Action: "save", Percentage: pct},
+				Trigger:       agent.StandingIntentTrigger{Type: "on_receive", MinAmountUsdc: 0.1},
+				CustodyMode:   agent.CustodyManaged,
+				SourceWallet:  boundWallet,
+				NotifyPhone:   phone,
 				SourceChannel: "whatsapp",
 			}
 
@@ -607,7 +657,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 					"• *Vault Mode*: %s\n"+
 					"• *Monitoring*: 24/7 Go Daemon Active\n\n"+
 					"_Rova will automatically detect deposits and transfer %.0f%% into your Rova Savings Vault._",
-				pct, userWallet, b.Config.VaultStrategy, pct,
+				pct, boundWallet, b.Config.VaultStrategy, pct,
 			)
 			b.replyText(jid, reply)
 			return
@@ -621,23 +671,17 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			saveAmount = 25.0
 		}
 
-		userWallet := userRecord.CircleWalletAddress
-		if userWallet == "" {
-			userWallet = b.Config.CircleWalletID
-		}
-
 		savingsTarget := userRecord.SavingsWalletAddress
 		if savingsTarget == "" {
-			savingsTarget = userWallet
+			savingsTarget = boundWallet
 		}
 
-		txHash, err := b.CircleClient.DepositSavingsVault(ctx, userWallet, savingsTarget, saveAmount)
+		txHash, err := b.CircleClient.DepositSavingsVault(ctx, boundWallet, savingsTarget, saveAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Savings Deposit Failed*: %v", err))
 			return
 		}
 
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
 		reply := fmt.Sprintf(
 			"🔒 *Rova Savings Vault Deposit Complete!*\n\n"+
 				"• *Amount Saved*: %.2f USDC\n"+

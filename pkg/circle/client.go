@@ -147,29 +147,7 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 
 	err := cmd.Run()
 	if err != nil {
-		// If CLI is not present or requires interactive auth, fallback to Circle Developer-Controlled Wallet API execution
-		sellToken := "0x3600000000000000000000000000000000000000" // USDC Address on Arc
-		buyToken := "0x360000000000000000000000000000000001"  // EURC Address on Arc
-		if strings.ToUpper(buyCurrency) == "USDC" {
-			sellToken, buyToken = buyToken, sellToken
-		}
-		amountInt := int64(amount * 1e6)
-		minOutInt := int64(float64(amountInt) * 0.90)
-		deadline := time.Now().Add(20 * time.Minute).Unix()
-
-		params := []interface{}{
-			fmt.Sprintf("%d", amountInt),
-			fmt.Sprintf("%d", minOutInt),
-			[]string{sellToken, buyToken},
-			walletAddress,
-			fmt.Sprintf("%d", deadline),
-		}
-
-		routerAddr := c.Config.SwapRouterAddress
-		if routerAddr == "" {
-			routerAddr = "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
-		}
-		return c.ExecuteContractWithWallet(ctx, walletID, routerAddr, "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)", params)
+		return "", fmt.Errorf("Circle Agent Stack execution failed: %v | stderr: %s", err, errBuf.String())
 	}
 
 	var resStruct struct {

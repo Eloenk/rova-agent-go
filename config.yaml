@@ -41,7 +41,7 @@ balance:
   #   "wss" - Real-time push WebSocket log subscription (Transfer events)
   #   "rpc" - Polling via JSON-RPC with multi-endpoint failover
   mode: "wss"
-  poll_interval_sec: 5
+  poll_interval_sec: 180
 
 arc:
   rpc_url: "https://arc-testnet.drpc.org"

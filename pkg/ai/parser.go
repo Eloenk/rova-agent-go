@@ -391,8 +391,15 @@ func (p *AIParser) failsafeParse(input string) *ParsedIntent {
 	}
 
 	reAddr := regexp.MustCompile(`0x[a-fA-F0-9]{40}`)
+	reEmail := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	rePhone := regexp.MustCompile(`\+?[0-9]{10,15}`)
+
 	if addr := reAddr.FindString(input); addr != "" {
 		intent.Recipient = addr
+	} else if email := reEmail.FindString(input); email != "" {
+		intent.Recipient = email
+	} else if phone := rePhone.FindString(input); phone != "" {
+		intent.Recipient = phone
 	}
 
 	if strings.Contains(text, "swap") || strings.Contains(text, "eurc") {
@@ -430,3 +437,227 @@ func (p *AIParser) failsafeParse(input string) *ParsedIntent {
 
 	return intent
 }
+
+func (p *AIParser) GenerateConversationalResponse(ctx context.Context, intent string, userPhone string, walletAddr string, rulesInfo string, extraContext string) (string, error) {
+	prompt := fmt.Sprintf(`You are Rova AI, a friendly, ultra-knowledgeable autonomous financial agent on Arc Testnet for WhatsApp.
+Compose a natural, conversational response for a user requesting their '%s'.
+
+Here is the live data to include in your conversational reply:
+- Phone: %s
+- Circle Wallet Address: %s
+- Active Rules / Watcher Status: %s
+- Additional Context / Balances: %s
+
+Guidelines:
+- Make it conversational, polite, and helpful (not a robotic static template).
+- Use WhatsApp markdown formatting (*bold*, _italics_, 'code').
+- Explicitly display their wallet address, active balances/rules, and Arc Testnet context.
+- Keep it under 150 words. Do not wrap output in JSON or markdown code block backticks.`, intent, userPhone, walletAddr, rulesInfo, extraContext)
+
+	res, err := p.GenerateText(ctx, prompt)
+	if err != nil || strings.TrimSpace(res) == "" {
+		// Friendly conversational fallback if LLM endpoint is unreachable
+		if intent == "balance" {
+			return fmt.Sprintf("💳 *Rova Account Overview*\n\nHey there! Here is your live account summary:\n• *Phone*: %s\n• *Wallet Address*: `%s`\n• *Context*: %s\n• *Network*: Arc Testnet\n\n_Send stablecoins to your wallet to start automating capital flows!_", userPhone, walletAddr, extraContext), nil
+		}
+		return fmt.Sprintf("📊 *Rova Engine Status*\n\nHere is your active watcher status:\n• *Phone*: %s\n• *Wallet Address*: `%s`\n%s\n\n_Rova is continuously monitoring Arc Testnet 24/7._", userPhone, walletAddr, rulesInfo), nil
+	}
+
+	return strings.TrimSpace(res), nil
+}
+
+func (p *AIParser) GenerateText(ctx context.Context, prompt string) (string, error) {
+	prov := strings.ToLower(p.Provider)
+
+	if prov == "gemini" && p.GeminiAPIKey != "" {
+		return p.generateTextGemini(ctx, prompt)
+	}
+
+	if prov == "anthropic" && p.AnthropicKey != "" {
+		return p.generateTextAnthropic(ctx, prompt)
+	}
+
+	if prov == "agentrouter" {
+		return p.generateTextAgentRouter(ctx, prompt)
+	}
+
+	// Auto failover
+	if p.AnthropicKey != "" {
+		if text, err := p.generateTextAnthropic(ctx, prompt); err == nil && text != "" {
+			return text, nil
+		}
+	}
+
+	if p.GeminiAPIKey != "" {
+		if text, err := p.generateTextGemini(ctx, prompt); err == nil && text != "" {
+			return text, nil
+		}
+	}
+
+	return p.generateTextAgentRouter(ctx, prompt)
+}
+
+func (p *AIParser) generateTextGemini(ctx context.Context, prompt string) (string, error) {
+	modelName := p.ModelName
+	if modelName == "" || modelName == "gemini-2.0-flash" {
+		modelName = "gemini-flash-latest"
+	}
+
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", modelName)
+	reqPayload := map[string]interface{}{
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]string{
+					{"text": prompt},
+				},
+			},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-goog-api-key", p.GeminiAPIKey)
+
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("gemini API error (%d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	var geminiRes struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+
+	if err := json.Unmarshal(respBytes, &geminiRes); err != nil || len(geminiRes.Candidates) == 0 || len(geminiRes.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("invalid gemini response")
+	}
+
+	return geminiRes.Candidates[0].Content.Parts[0].Text, nil
+}
+
+func (p *AIParser) generateTextAnthropic(ctx context.Context, prompt string) (string, error) {
+	url := "https://api.anthropic.com/v1/messages"
+	reqPayload := map[string]interface{}{
+		"model":      "claude-3-5-sonnet-20240620",
+		"max_tokens": 1024,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("x-api-key", p.AnthropicKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("anthropic API error (%d)", resp.StatusCode)
+	}
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	var anthropicRes struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+
+	if err := json.Unmarshal(respBytes, &anthropicRes); err != nil || len(anthropicRes.Content) == 0 {
+		return "", fmt.Errorf("invalid anthropic response")
+	}
+
+	return anthropicRes.Content[0].Text, nil
+}
+
+func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (string, error) {
+	url := os.Getenv("AGENTROUTER_BASE_URL")
+	if url == "" {
+		url = "https://agentrouter.org/v1/chat/completions"
+	}
+
+	modelToUse := p.ModelName
+	if modelToUse == "" {
+		modelToUse = "claude-sonnet-4-5-20250929"
+	}
+
+	reqPayload := map[string]interface{}{
+		"model": modelToUse,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"temperature": 0.7,
+	}
+
+	bodyBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if p.AgentRouterKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.AgentRouterKey)
+	}
+
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("agentrouter API error (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	var agentRouterRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.Unmarshal(respBytes, &agentRouterRes); err != nil || len(agentRouterRes.Choices) == 0 {
+		return "", fmt.Errorf("invalid agentrouter response")
+	}
+
+	return agentRouterRes.Choices[0].Message.Content, nil
+}
+
