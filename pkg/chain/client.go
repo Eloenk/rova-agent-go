@@ -161,7 +161,7 @@ func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddr
 func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer func(toAddress string, amount float64, txHash string)) {
 	wssURLs := c.Config.ArcWSSURLs
 	if len(wssURLs) == 0 {
-		wssURLs = []string{"wss://arc-testnet.drpc.org/ws", "wss://wss.testnet.arc.network"}
+		wssURLs = []string{"wss://arc-testnet.drpc.org", "wss://rpc.testnet.arc.network"}
 	}
 
 	usdcAddressHex := c.Config.USDCContractAddress

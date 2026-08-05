@@ -49,8 +49,8 @@ arc:
     - "https://arc-testnet.drpc.org"
     - "https://rpc.testnet.arc.network"
   wss_urls:
-    - "wss://arc-testnet.drpc.org/ws"
-    - "wss://wss.testnet.arc.network"
+    - "wss://arc-testnet.drpc.org"
+    - "wss://rpc.testnet.arc.network"
   chain_id: 5042002
   execution_log_address: "0x58d1e3e11C7a93cb26C371B115f2710aF68d427a"
   usdc_address: "0x3600000000000000000000000000000000000000"
