@@ -43,14 +43,6 @@ func NewCircleClient(cfg *config.Config) *CircleClient {
 	}
 }
 
-func (c *CircleClient) getFormattedAPIKey() string {
-	apiKey := c.Config.CircleAPIKey
-	if len(strings.Split(apiKey, ":")) == 2 {
-		apiKey = "TEST_API_KEY:" + apiKey
-	}
-	return apiKey
-}
-
 // fetchEntityPublicKey retrieves Circle's RSA public key for entity secret encryption.
 func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 	c.pubKeyOnce.Do(func() {
@@ -59,7 +51,7 @@ func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 			c.pubKeyErr = fmt.Errorf("failed to create public key request: %w", err)
 			return
 		}
-		req.Header.Set("Authorization", "Bearer "+c.getFormattedAPIKey())
+		req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -246,7 +238,7 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 	)
 
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("CIRCLE_API_KEY=%s", c.getFormattedAPIKey()),
+		fmt.Sprintf("CIRCLE_API_KEY=%s", c.Config.CircleAPIKey),
 		fmt.Sprintf("CIRCLE_ENTITY_SECRET=%s", c.Config.CircleEntitySecret),
 		"CIRCLE_ACCEPT_TERMS=1",
 	)
@@ -370,7 +362,7 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.getFormattedAPIKey())
+	req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {

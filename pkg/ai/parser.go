@@ -28,12 +28,12 @@ type ParsedIntent struct {
 }
 
 type AIParser struct {
-	GeminiAPIKey   string
-	AnthropicKey   string
-	AgentRouterKey string
-	Provider       string
-	ModelName      string
-	HTTPClient     *http.Client
+	GeminiAPIKey string
+	AnthropicKey string
+	NvidiaKey    string
+	Provider     string
+	ModelName    string
+	HTTPClient   *http.Client
 }
 
 func NewAIParser() *AIParser {
@@ -51,11 +51,11 @@ func NewAIParserWithConfig(cfg *config.Config) *AIParser {
 		provider = "auto"
 	}
 	return &AIParser{
-		GeminiAPIKey:   cfg.GoogleGenerativeAIAPIKey,
-		AnthropicKey:   cfg.AnthropicAPIKey,
-		AgentRouterKey: os.Getenv("AGENTROUTER_API_KEY"),
-		Provider:       provider,
-		ModelName:      model,
+		GeminiAPIKey: cfg.GoogleGenerativeAIAPIKey,
+		AnthropicKey: cfg.AnthropicAPIKey,
+		NvidiaKey:    os.Getenv("NVIDIA_API_KEY"),
+		Provider:     provider,
+		ModelName:    model,
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -118,11 +118,11 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 		return p.callAnthropic(ctx, userInput)
 	}
 
-	if prov == "agentrouter" {
-		return p.callAgentRouter(ctx, userInput)
+	if prov == "nvidia" {
+		return p.callNvidia(ctx, userInput)
 	}
 
-	// Provider == "auto" (Failover: Anthropic -> Gemini -> AgentRouter)
+	// Provider == "auto" (Failover: Anthropic -> Gemini -> NVIDIA)
 	if p.AnthropicKey != "" {
 		intent, err := p.callAnthropic(ctx, userInput)
 		if err == nil && intent != nil {
@@ -143,19 +143,19 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 		}
 	}
 
-	intent, err := p.callAgentRouter(ctx, userInput)
+	intent, err := p.callNvidia(ctx, userInput)
 	if err == nil && intent != nil {
 		return intent, nil
 	}
 	if err != nil {
-		errs = append(errs, fmt.Sprintf("AgentRouter API error: %v", err))
+		errs = append(errs, fmt.Sprintf("NVIDIA API error: %v", err))
 	}
 
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("%s", strings.Join(errs, " | "))
 	}
 
-	return nil, fmt.Errorf("AI Agent parsing failed: valid GOOGLE_GENERATIVE_AI_API_KEY, ANTHROPIC_API_KEY, or AGENTROUTER_API_KEY required")
+	return nil, fmt.Errorf("AI Agent parsing failed: valid GOOGLE_GENERATIVE_AI_API_KEY, ANTHROPIC_API_KEY, or NVIDIA_API_KEY required")
 }
 
 func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent, error) {
@@ -273,15 +273,15 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	return cleanAndUnmarshalJSON(anthropicRes.Content[0].Text)
 }
 
-func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIntent, error) {
-	url := os.Getenv("AGENTROUTER_BASE_URL")
+func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent, error) {
+	url := os.Getenv("NVIDIA_BASE_URL")
 	if url == "" {
-		url = "https://agentrouter.org/v1/chat/completions"
+		url = "https://integrate.api.nvidia.com/v1/chat/completions"
 	}
 
 	modelToUse := p.ModelName
 	if modelToUse == "" {
-		modelToUse = "claude-sonnet-4-5-20250929"
+		modelToUse = "z-ai/glm-5.2"
 	}
 
 	reqPayload := map[string]interface{}{
@@ -291,6 +291,10 @@ func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIn
 			{"role": "user", "content": input},
 		},
 		"temperature": 0.1,
+		"top_p":       1,
+		"max_tokens":  8192,
+		"seed":        42,
+		"stream":      false,
 	}
 
 	bodyBytes, err := json.Marshal(reqPayload)
@@ -303,8 +307,9 @@ func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIn
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if p.AgentRouterKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.AgentRouterKey)
+	req.Header.Set("Accept", "application/json")
+	if p.NvidiaKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.NvidiaKey)
 	}
 
 	resp, err := p.HTTPClient.Do(req)
@@ -315,11 +320,11 @@ func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIn
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("agentrouter API error (%d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	respBytes, _ := io.ReadAll(resp.Body)
-	var agentRouterRes struct {
+	var nvidiaRes struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
@@ -327,15 +332,15 @@ func (p *AIParser) callAgentRouter(ctx context.Context, input string) (*ParsedIn
 		} `json:"choices"`
 	}
 
-	if err := json.Unmarshal(respBytes, &agentRouterRes); err != nil {
+	if err := json.Unmarshal(respBytes, &nvidiaRes); err != nil {
 		return nil, err
 	}
 
-	if len(agentRouterRes.Choices) == 0 {
-		return nil, fmt.Errorf("empty response from agentrouter")
+	if len(nvidiaRes.Choices) == 0 {
+		return nil, fmt.Errorf("empty response from NVIDIA API")
 	}
 
-	return cleanAndUnmarshalJSON(agentRouterRes.Choices[0].Message.Content)
+	return cleanAndUnmarshalJSON(nvidiaRes.Choices[0].Message.Content)
 }
 
 func cleanAndUnmarshalJSON(raw string) (*ParsedIntent, error) {
@@ -477,8 +482,8 @@ func (p *AIParser) GenerateText(ctx context.Context, prompt string) (string, err
 		return p.generateTextAnthropic(ctx, prompt)
 	}
 
-	if prov == "agentrouter" {
-		return p.generateTextAgentRouter(ctx, prompt)
+	if prov == "nvidia" {
+		return p.generateTextNvidia(ctx, prompt)
 	}
 
 	// Auto failover
@@ -494,7 +499,7 @@ func (p *AIParser) GenerateText(ctx context.Context, prompt string) (string, err
 		}
 	}
 
-	return p.generateTextAgentRouter(ctx, prompt)
+	return p.generateTextNvidia(ctx, prompt)
 }
 
 func (p *AIParser) generateTextGemini(ctx context.Context, prompt string) (string, error) {
@@ -601,15 +606,15 @@ func (p *AIParser) generateTextAnthropic(ctx context.Context, prompt string) (st
 	return anthropicRes.Content[0].Text, nil
 }
 
-func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (string, error) {
-	url := os.Getenv("AGENTROUTER_BASE_URL")
+func (p *AIParser) generateTextNvidia(ctx context.Context, prompt string) (string, error) {
+	url := os.Getenv("NVIDIA_BASE_URL")
 	if url == "" {
-		url = "https://agentrouter.org/v1/chat/completions"
+		url = "https://integrate.api.nvidia.com/v1/chat/completions"
 	}
 
 	modelToUse := p.ModelName
 	if modelToUse == "" {
-		modelToUse = "claude-sonnet-4-5-20250929"
+		modelToUse = "z-ai/glm-5.2"
 	}
 
 	reqPayload := map[string]interface{}{
@@ -618,6 +623,10 @@ func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0.7,
+		"top_p":       1,
+		"max_tokens":  8192,
+		"seed":        42,
+		"stream":      false,
 	}
 
 	bodyBytes, err := json.Marshal(reqPayload)
@@ -630,8 +639,9 @@ func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if p.AgentRouterKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.AgentRouterKey)
+	req.Header.Set("Accept", "application/json")
+	if p.NvidiaKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.NvidiaKey)
 	}
 
 	resp, err := p.HTTPClient.Do(req)
@@ -642,11 +652,11 @@ func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("agentrouter API error (%d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	respBytes, _ := io.ReadAll(resp.Body)
-	var agentRouterRes struct {
+	var nvidiaRes struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
@@ -654,10 +664,10 @@ func (p *AIParser) generateTextAgentRouter(ctx context.Context, prompt string) (
 		} `json:"choices"`
 	}
 
-	if err := json.Unmarshal(respBytes, &agentRouterRes); err != nil || len(agentRouterRes.Choices) == 0 {
-		return "", fmt.Errorf("invalid agentrouter response")
+	if err := json.Unmarshal(respBytes, &nvidiaRes); err != nil || len(nvidiaRes.Choices) == 0 {
+		return "", fmt.Errorf("invalid NVIDIA response")
 	}
 
-	return agentRouterRes.Choices[0].Message.Content, nil
+	return nvidiaRes.Choices[0].Message.Content, nil
 }
 
