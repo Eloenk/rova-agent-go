@@ -548,7 +548,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		b.replyText(jid, fmt.Sprintf("⏳ *Sending %.2f USDC to %s...*", sendAmount, targetRecipient))
 
-		txHash, err := b.CircleClient.TransferUSDC(ctx, resolvedWallet, sendAmount)
+		txHash, err := b.CircleClient.TransferUSDCFromWallet(ctx, boundWallet, resolvedWallet, sendAmount)
 		if err != nil {
 			b.replyText(jid, fmt.Sprintf("❌ *Transaction Failed*: %v", err))
 			return

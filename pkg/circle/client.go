@@ -43,6 +43,14 @@ func NewCircleClient(cfg *config.Config) *CircleClient {
 	}
 }
 
+func (c *CircleClient) getFormattedAPIKey() string {
+	apiKey := c.Config.CircleAPIKey
+	if len(strings.Split(apiKey, ":")) == 2 {
+		apiKey = "TEST_API_KEY:" + apiKey
+	}
+	return apiKey
+}
+
 // fetchEntityPublicKey retrieves Circle's RSA public key for entity secret encryption.
 func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 	c.pubKeyOnce.Do(func() {
@@ -51,7 +59,7 @@ func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 			c.pubKeyErr = fmt.Errorf("failed to create public key request: %w", err)
 			return
 		}
-		req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
+		req.Header.Set("Authorization", "Bearer "+c.getFormattedAPIKey())
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -60,12 +68,23 @@ func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 		}
 		defer resp.Body.Close()
 
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			c.pubKeyErr = fmt.Errorf("failed to read Circle public key response body: %w", err)
+			return
+		}
+
+		if resp.StatusCode >= 400 {
+			c.pubKeyErr = fmt.Errorf("Circle public key API error (%d): %s", resp.StatusCode, string(bodyBytes))
+			return
+		}
+
 		var result struct {
 			Data struct {
 				PublicKey string `json:"publicKey"`
 			} `json:"data"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		if err := json.Unmarshal(bodyBytes, &result); err != nil {
 			c.pubKeyErr = fmt.Errorf("failed to decode Circle public key response: %w", err)
 			return
 		}
@@ -128,13 +147,15 @@ type TransferRequest struct {
 }
 
 type ContractExecutionRequest struct {
-	IdempotencyKey          string        `json:"idempotencyKey"`
-	EntitySecretCiphertext  string        `json:"entitySecretCiphertext"`
-	WalletID                string        `json:"walletId"`
-	ContractAddress         string        `json:"contractAddress"`
-	ABIFunctionSignature    string        `json:"abiFunctionSignature"`
-	ABIParameters           []interface{} `json:"abiParameters"`
-	FeeLevel                string        `json:"feeLevel"`
+	IdempotencyKey         string        `json:"idempotencyKey"`
+	EntitySecretCiphertext string        `json:"entitySecretCiphertext"`
+	WalletID               string        `json:"walletId,omitempty"`
+	WalletAddress          string        `json:"walletAddress,omitempty"`
+	Blockchain             string        `json:"blockchain,omitempty"`
+	ContractAddress        string        `json:"contractAddress"`
+	ABIFunctionSignature   string        `json:"abiFunctionSignature"`
+	ABIParameters          []interface{} `json:"abiParameters"`
+	FeeLevel               string        `json:"feeLevel"`
 }
 
 type CircleTxResponse struct {
@@ -216,7 +237,7 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 		amount, sellCurrency, buyCurrency, quote.ExchangeRate)
 
 	// Invoke Circle Agent Stack CLI (@circle-fin/cli) directly
-	cmd := exec.CommandContext(ctx, "npx", "-y", "@circle-fin/cli", "swap",
+	cmd := exec.CommandContext(ctx, "npx", "-y", "@circle-fin/cli", "wallet", "swap",
 		"--from", sellCurrency,
 		"--to", buyCurrency,
 		"--amount", fmt.Sprintf("%.6f", amount),
@@ -225,7 +246,7 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 	)
 
 	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("CIRCLE_API_KEY=%s", c.Config.CircleAPIKey),
+		fmt.Sprintf("CIRCLE_API_KEY=%s", c.getFormattedAPIKey()),
 		fmt.Sprintf("CIRCLE_ENTITY_SECRET=%s", c.Config.CircleEntitySecret),
 		"CIRCLE_ACCEPT_TERMS=1",
 	)
@@ -321,11 +342,17 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 	payload := ContractExecutionRequest{
 		IdempotencyKey:         uuid.New().String(),
 		EntitySecretCiphertext: ciphertext,
-		WalletID:               targetWalletID,
 		ContractAddress:        contractAddress,
 		ABIFunctionSignature:   functionSig,
 		ABIParameters:          params,
 		FeeLevel:               "MEDIUM",
+	}
+
+	if strings.HasPrefix(targetWalletID, "0x") {
+		payload.WalletAddress = targetWalletID
+		payload.Blockchain = "ARC-TESTNET"
+	} else {
+		payload.WalletID = targetWalletID
 	}
 
 	return c.postTransaction(ctx, url, payload)
@@ -343,7 +370,7 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
+	req.Header.Set("Authorization", "Bearer "+c.getFormattedAPIKey())
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
