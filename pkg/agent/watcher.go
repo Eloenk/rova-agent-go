@@ -47,13 +47,32 @@ func NewWatcherEngine(store *Store, chainClient *chain.ChainClient, shopper *nan
 	}
 }
 
+func (w *WatcherEngine) getActiveTargetWallets() []string {
+	walletMap := make(map[string]bool)
+	for _, intent := range w.Store.ListActiveStandingIntents() {
+		if intent.SourceWallet != "" {
+			walletMap[strings.ToLower(intent.SourceWallet)] = true
+		}
+	}
+	for _, rule := range w.Store.ListActiveRules() {
+		if rule.SourceWallet != "" {
+			walletMap[strings.ToLower(rule.SourceWallet)] = true
+		}
+	}
+	wallets := make([]string, 0, len(walletMap))
+	for wallet := range walletMap {
+		wallets = append(wallets, wallet)
+	}
+	return wallets
+}
+
 func (w *WatcherEngine) StartWatcher(ctx context.Context) {
 	ticker := time.NewTicker(w.Interval)
 
 	// Mode 1: Real-time WSS Event Subscription
 	if w.ChainClient != nil && w.ChainClient.Config != nil && w.ChainClient.Config.BalanceMode == "wss" {
-		log.Println("[Watcher Engine] Initializing Real-Time WSS Transfer Event Listener...")
-		w.ChainClient.ListenUSDCTransferEvents(ctx, func(toAddress string, amount float64, txHash string) {
+		log.Println("[Watcher Engine] Initializing Real-Time WSS Transfer Event Listener for Active Rule Wallets...")
+		w.ChainClient.ListenUSDCTransferEvents(ctx, w.getActiveTargetWallets, func(toAddress string, amount float64, txHash string) {
 			w.handleWSSTransferEvent(ctx, toAddress, amount, txHash)
 		})
 	} else {

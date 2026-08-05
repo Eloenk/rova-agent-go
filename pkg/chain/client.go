@@ -158,7 +158,7 @@ func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddr
 	return 0, fmt.Errorf("all RPC endpoints failed, last error: %v", lastErr)
 }
 
-func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer func(toAddress string, amount float64, txHash string)) {
+func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWallets func() []string, onTransfer func(toAddress string, amount float64, txHash string)) {
 	wssURLs := c.Config.ArcWSSURLs
 	if len(wssURLs) == 0 {
 		wssURLs = []string{"wss://arc-testnet.drpc.org", "wss://rpc.testnet.arc.network"}
@@ -179,8 +179,31 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer f
 			default:
 			}
 
+			targetWallets := getTargetWallets()
+			if len(targetWallets) == 0 {
+				log.Println("[Chain WSS] No active wallets with rules/intents found. Checking again in 10s...")
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
+			toTopicHashes := make([]common.Hash, 0, len(targetWallets))
+			targetMap := make(map[string]bool)
+			for _, w := range targetWallets {
+				cleanW := strings.TrimSpace(w)
+				if strings.HasPrefix(cleanW, "0x") && len(cleanW) == 42 {
+					targetMap[strings.ToLower(cleanW)] = true
+					toTopicHashes = append(toTopicHashes, common.BytesToHash(common.LeftPadBytes(common.HexToAddress(cleanW).Bytes(), 32)))
+				}
+			}
+
+			if len(toTopicHashes) == 0 {
+				log.Println("[Chain WSS] No valid 0x wallet addresses found in active rules. Retrying in 10s...")
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
 			for _, wssURL := range wssURLs {
-				log.Printf("[Chain WSS] Connecting to WebSocket log stream: %s", wssURL)
+				log.Printf("[Chain WSS] Connecting to WebSocket log stream for %d active rule wallet(s): %s", len(toTopicHashes), wssURL)
 				client, err := ethclient.DialContext(ctx, wssURL)
 				if err != nil {
 					log.Printf("[Chain WSS] Connection failed for %s: %v", wssURL, err)
@@ -190,7 +213,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer f
 
 				query := ethereum.FilterQuery{
 					Addresses: []common.Address{usdcAddress},
-					Topics:    [][]common.Hash{{transferTopic}},
+					Topics:    [][]common.Hash{{transferTopic}, nil, toTopicHashes},
 				}
 
 				logs := make(chan types.Log)
@@ -202,7 +225,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer f
 					continue
 				}
 
-				log.Printf("[Chain WSS] Subscribed to real-time USDC Transfer events on %s", wssURL)
+				log.Printf("[Chain WSS] Subscribed to real-time USDC Transfer events ONLY for %d target wallet(s) on %s", len(toTopicHashes), wssURL)
 
 				for {
 					select {
@@ -218,14 +241,16 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, onTransfer f
 					case vLog := <-logs:
 						if len(vLog.Topics) >= 3 {
 							toAddr := common.BytesToAddress(vLog.Topics[2].Bytes()).Hex()
-							rawAmount := new(big.Int).SetBytes(vLog.Data)
-							balFloat := new(big.Float).SetInt(rawAmount)
-							decimals := new(big.Float).SetFloat64(1000000.0)
-							amount, _ := new(big.Float).Quo(balFloat, decimals).Float64()
+							if targetMap[strings.ToLower(toAddr)] {
+								rawAmount := new(big.Int).SetBytes(vLog.Data)
+								balFloat := new(big.Float).SetInt(rawAmount)
+								decimals := new(big.Float).SetFloat64(1000000.0)
+								amount, _ := new(big.Float).Quo(balFloat, decimals).Float64()
 
-							txHash := vLog.TxHash.Hex()
-							log.Printf("[Chain WSS Event] Real-Time USDC Transfer Detected! To: %s, Amount: %.2f USDC, Tx: %s", toAddr, amount, txHash)
-							onTransfer(toAddr, amount, txHash)
+								txHash := vLog.TxHash.Hex()
+								log.Printf("[Chain WSS Event] Real-Time USDC Transfer Detected for Rule Wallet! To: %s, Amount: %.2f USDC, Tx: %s", toAddr, amount, txHash)
+								onTransfer(toAddr, amount, txHash)
+							}
 						}
 					}
 				}
