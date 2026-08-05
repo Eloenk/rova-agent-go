@@ -108,6 +108,20 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 		senderJID := v.Info.Sender.ToNonAD()
 		senderPhone := senderJID.User
 
+		// WhatsApp LID Resolution: When sender JID is @lid (Linked ID),
+		// the .User field contains a meaningless opaque number, NOT the phone number.
+		// Resolve it to the actual phone-based JID via whatsmeow's LID→PN store.
+		if senderJID.Server == "lid" {
+			pnJID, err := b.Client.Store.LIDs.GetPNForLID(context.Background(), senderJID)
+			if err == nil && !pnJID.IsEmpty() {
+				log.Printf("[MeowBot] Resolved LID %s → phone JID %s", senderJID.String(), pnJID.String())
+				senderPhone = pnJID.User
+				senderJID = pnJID // Use phone-based JID for replies too
+			} else {
+				log.Printf("[MeowBot] WARNING: Could not resolve LID %s to phone number (err: %v). User lookup may fail.", senderJID.String(), err)
+			}
+		}
+
 		text := extractMessageText(v.Message)
 		if text == "" {
 			return

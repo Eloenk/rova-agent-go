@@ -3,13 +3,21 @@ package circle
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +27,11 @@ import (
 type CircleClient struct {
 	Config     *config.Config
 	HTTPClient *http.Client
+
+	// Cached Circle entity public key for RSA-OAEP encryption
+	pubKeyOnce sync.Once
+	pubKey     *rsa.PublicKey
+	pubKeyErr  error
 }
 
 func NewCircleClient(cfg *config.Config) *CircleClient {
@@ -28,6 +41,81 @@ func NewCircleClient(cfg *config.Config) *CircleClient {
 			Timeout: 15 * time.Second,
 		},
 	}
+}
+
+// fetchEntityPublicKey retrieves Circle's RSA public key for entity secret encryption.
+func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
+	c.pubKeyOnce.Do(func() {
+		req, err := http.NewRequest("GET", "https://api.circle.com/v1/w3s/config/entity/publicKey", nil)
+		if err != nil {
+			c.pubKeyErr = fmt.Errorf("failed to create public key request: %w", err)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			c.pubKeyErr = fmt.Errorf("failed to fetch Circle entity public key: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			Data struct {
+				PublicKey string `json:"publicKey"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			c.pubKeyErr = fmt.Errorf("failed to decode Circle public key response: %w", err)
+			return
+		}
+
+		block, _ := pem.Decode([]byte(result.Data.PublicKey))
+		if block == nil {
+			c.pubKeyErr = fmt.Errorf("failed to PEM-decode Circle entity public key")
+			return
+		}
+
+		pubInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			c.pubKeyErr = fmt.Errorf("failed to parse Circle public key: %w", err)
+			return
+		}
+
+		rsaPub, ok := pubInterface.(*rsa.PublicKey)
+		if !ok {
+			c.pubKeyErr = fmt.Errorf("Circle public key is not RSA")
+			return
+		}
+
+		c.pubKey = rsaPub
+		log.Println("[Circle] Entity public key fetched and cached successfully")
+	})
+
+	return c.pubKey, c.pubKeyErr
+}
+
+// generateEntitySecretCiphertext encrypts the entity secret with RSA-OAEP SHA-256
+// and returns a base64-encoded ciphertext string. Must be generated fresh per request.
+func (c *CircleClient) generateEntitySecretCiphertext() (string, error) {
+	pubKey, err := c.fetchEntityPublicKey()
+	if err != nil {
+		return "", err
+	}
+
+	entitySecretHex := c.Config.CircleEntitySecret
+	if entitySecretHex == "" {
+		return "", fmt.Errorf("CIRCLE_ENTITY_SECRET is not configured")
+	}
+
+	// Circle expects the hex string bytes (not decoded hex) to be encrypted
+	hash := sha256.New()
+	ciphertext, err := rsa.EncryptOAEP(hash, rand.Reader, pubKey, []byte(entitySecretHex), nil)
+	if err != nil {
+		return "", fmt.Errorf("RSA-OAEP encryption of entity secret failed: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
 type TransferRequest struct {
@@ -40,12 +128,13 @@ type TransferRequest struct {
 }
 
 type ContractExecutionRequest struct {
-	IdempotencyKey       string        `json:"idempotencyKey"`
-	WalletID             string        `json:"walletId"`
-	ContractAddress      string        `json:"contractAddress"`
-	ABIFunctionSignature string        `json:"abiFunctionSignature"`
-	ABIParameters        []interface{} `json:"abiParameters"`
-	FeeLevel             string        `json:"feeLevel"`
+	IdempotencyKey          string        `json:"idempotencyKey"`
+	EntitySecretCiphertext  string        `json:"entitySecretCiphertext"`
+	WalletID                string        `json:"walletId"`
+	ContractAddress         string        `json:"contractAddress"`
+	ABIFunctionSignature    string        `json:"abiFunctionSignature"`
+	ABIParameters           []interface{} `json:"abiParameters"`
+	FeeLevel                string        `json:"feeLevel"`
 }
 
 type CircleTxResponse struct {
@@ -222,14 +311,21 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 		return "", fmt.Errorf("Circle API key and Wallet ID are required for live contract execution")
 	}
 
+	// Generate fresh entitySecretCiphertext for this request
+	ciphertext, err := c.generateEntitySecretCiphertext()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate entity secret ciphertext: %w", err)
+	}
+
 	url := "https://api.circle.com/v1/w3s/developer/transactions/contractExecution"
 	payload := ContractExecutionRequest{
-		IdempotencyKey:       uuid.New().String(),
-		WalletID:             targetWalletID,
-		ContractAddress:      contractAddress,
-		ABIFunctionSignature: functionSig,
-		ABIParameters:        params,
-		FeeLevel:             "MEDIUM",
+		IdempotencyKey:         uuid.New().String(),
+		EntitySecretCiphertext: ciphertext,
+		WalletID:               targetWalletID,
+		ContractAddress:        contractAddress,
+		ABIFunctionSignature:   functionSig,
+		ABIParameters:          params,
+		FeeLevel:               "MEDIUM",
 	}
 
 	return c.postTransaction(ctx, url, payload)
@@ -246,14 +342,8 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	apiKey := c.Config.CircleAPIKey
-	if len(strings.Split(apiKey, ":")) == 2 {
-		apiKey = "TEST_API_KEY:" + apiKey
-	}
-
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("X-User-Token", c.Config.CircleEntitySecret)
+	req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
