@@ -23,8 +23,10 @@ import (
 
 	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/ai"
+	"rova-agent-go/pkg/chain"
 	"rova-agent-go/pkg/circle"
 	"rova-agent-go/pkg/config"
+	"rova-agent-go/pkg/nanopay"
 )
 
 type MeowBot struct {
@@ -716,6 +718,10 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 	}
 }
 
+func (b *MeowBot) SendMessage(toPhone, text string) error {
+	return b.SendMessageToPhone(toPhone, text)
+}
+
 func (b *MeowBot) SendMessageToPhone(phone, text string) error {
 	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(phone, "+", ""), " ", "")
 	if !strings.HasSuffix(cleanPhone, "@s.whatsapp.net") {
@@ -729,7 +735,7 @@ func (b *MeowBot) SendMessageToPhone(phone, text string) error {
 	return nil
 }
 
-func (b *MeowBot) SendExecutionReport(phone string, opts ReportOpts) error {
+func (b *MeowBot) SendExecutionReport(phone string, opts agent.NotificationOpts) error {
 	var text strings.Builder
 	text.WriteString("🤖 *Rova Agent Execution Report (Go Engine)*\n\n")
 	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
@@ -781,7 +787,24 @@ func RunMeowBotService(cfg *config.Config) error {
 		return err
 	}
 
-	log.Println("[MeowBot] Rova WhatsApp Agent Service is RUNNING 24/7.")
+	chainClient, err := chain.NewChainClient(cfg)
+	if err != nil {
+		log.Printf("[MeowBot] Warning: Failed to init ChainClient for Watcher: %v", err)
+	}
+
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseAnonKey)
+	shopper := nanopay.NewShopper()
+	interval := time.Duration(cfg.BalancePollInterval) * time.Second
+	if interval <= 0 {
+		interval = 180 * time.Second
+	}
+
+	if chainClient != nil {
+		watcher := agent.NewWatcherEngine(store, chainClient, shopper, bot, interval)
+		watcher.StartWatcher(ctx)
+	}
+
+	log.Println("[MeowBot] Rova WhatsApp Agent Service & 24/7 Supabase Watcher Engine is RUNNING.")
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
