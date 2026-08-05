@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"rova-agent-go/pkg/config"
 )
 
@@ -39,12 +40,12 @@ type TransferRequest struct {
 }
 
 type ContractExecutionRequest struct {
-	IdempotencyKey  string   `json:"idempotencyKey"`
-	WalletID        string   `json:"walletId"`
-	ContractAddress string   `json:"contractAddress"`
-	ABIFunctionSignature string `json:"abiFunctionSignature"`
-	ABIParameters   []interface{} `json:"abiParameters"`
-	FeeLevel        string   `json:"feeLevel"`
+	IdempotencyKey       string        `json:"idempotencyKey"`
+	WalletID             string        `json:"walletId"`
+	ContractAddress      string        `json:"contractAddress"`
+	ABIFunctionSignature string        `json:"abiFunctionSignature"`
+	ABIParameters        []interface{} `json:"abiParameters"`
+	FeeLevel             string        `json:"feeLevel"`
 }
 
 type CircleTxResponse struct {
@@ -70,17 +71,15 @@ func (c *CircleClient) TransferUSDCFromWallet(ctx context.Context, walletID stri
 		return "", fmt.Errorf("Circle API key and Wallet ID are required for live USDC transfer")
 	}
 
-	url := "https://api.circle.com/v1/w3s/developer/transactions/transfer"
-	payload := TransferRequest{
-		IdempotencyKey:  fmt.Sprintf("tx-%d", time.Now().UnixNano()),
-		WalletID:        targetWalletID,
-		DestinationAddr: recipient,
-		Amount:          []string{fmt.Sprintf("%.6f", amount)},
-		TokenID:         c.Config.USDCContractAddress,
-		FeeLevel:        "MEDIUM",
+	usdcContract := c.Config.USDCContractAddress
+	if usdcContract == "" {
+		usdcContract = "0x3600000000000000000000000000000000000000"
 	}
 
-	return c.postTransaction(ctx, url, payload)
+	amountInt := int64(amount * 1e6)
+	params := []interface{}{recipient, fmt.Sprintf("%d", amountInt)}
+
+	return c.ExecuteContractWithWallet(ctx, targetWalletID, usdcContract, "transfer(address,uint256)", params)
 }
 
 type SwapQuote struct {
@@ -139,6 +138,7 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("CIRCLE_API_KEY=%s", c.Config.CircleAPIKey),
 		fmt.Sprintf("CIRCLE_ENTITY_SECRET=%s", c.Config.CircleEntitySecret),
+		"CIRCLE_ACCEPT_TERMS=1",
 	)
 
 	var outBuf, errBuf bytes.Buffer
@@ -224,7 +224,7 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 
 	url := "https://api.circle.com/v1/w3s/developer/transactions/contractExecution"
 	payload := ContractExecutionRequest{
-		IdempotencyKey:       fmt.Sprintf("exec-%d", time.Now().UnixNano()),
+		IdempotencyKey:       uuid.New().String(),
 		WalletID:             targetWalletID,
 		ContractAddress:      contractAddress,
 		ABIFunctionSignature: functionSig,
