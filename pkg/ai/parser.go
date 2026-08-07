@@ -94,6 +94,10 @@ func (p *AIParser) ParseIntentWithFallback(ctx context.Context, userInput string
 	if err == nil && intent != nil {
 		return intent, nil
 	}
+	prov := strings.ToLower(p.Provider)
+	if prov != "auto" {
+		return nil, err
+	}
 	if allowRegexFallback {
 		return p.failsafeParse(userInput), nil
 	}
@@ -509,16 +513,26 @@ Guidelines:
 func (p *AIParser) GenerateText(ctx context.Context, prompt string) (string, error) {
 	prov := strings.ToLower(p.Provider)
 
-	if prov == "gemini" && p.GeminiAPIKey != "" {
+	if prov == "gemini" {
+		if p.GeminiAPIKey == "" {
+			return "", fmt.Errorf("gemini provider selected in config.yaml but GOOGLE_GENERATIVE_AI_API_KEY is missing")
+		}
 		return p.generateTextGemini(ctx, prompt)
 	}
 
-	if prov == "anthropic" && p.AnthropicKey != "" {
+	if prov == "anthropic" {
+		if p.AnthropicKey == "" {
+			return "", fmt.Errorf("anthropic provider selected in config.yaml but ANTHROPIC_API_KEY is missing")
+		}
 		return p.generateTextAnthropic(ctx, prompt)
 	}
 
 	if prov == "nvidia" {
 		return p.generateTextNvidia(ctx, prompt)
+	}
+
+	if prov == "regex" || prov == "local" {
+		return "", fmt.Errorf("conversational LLM text generation disabled in regex mode")
 	}
 
 	// Auto failover

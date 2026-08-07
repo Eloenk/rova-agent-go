@@ -7,7 +7,7 @@ ai:
   #   "nvidia"    - NVIDIA NIM AI Router (https://integrate.api.nvidia.com/, Requires NVIDIA_API_KEY)
   #   "regex"     - Direct 0ms Local Deterministic Pattern Matching Failsafe Parser
   #   "auto"      - Failover: Anthropic -> Gemini -> NVIDIA
-  provider: "nvidia"
+  provider: "regex"
 
   # Model names (leave blank for automatic provider defaults):
   #   Gemini options:    "gemini-2.0-flash", "gemini-1.5-pro"
