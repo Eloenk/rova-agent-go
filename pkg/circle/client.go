@@ -265,24 +265,68 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 	cmd.Stderr = &errBuf
 
 	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("Circle Agent Stack execution failed: %v | stderr: %s", err, errBuf.String())
-	}
-
-	var resStruct struct {
-		TxHash string `json:"txHash"`
-		ID     string `json:"id"`
-	}
-	if err := json.Unmarshal(outBuf.Bytes(), &resStruct); err == nil {
-		if resStruct.TxHash != "" {
-			return resStruct.TxHash, nil
+	if err == nil {
+		var resStruct struct {
+			TxHash string `json:"txHash"`
+			ID     string `json:"id"`
 		}
-		if resStruct.ID != "" {
-			return c.waitForTransactionCompletion(ctx, resStruct.ID)
+		if err := json.Unmarshal(outBuf.Bytes(), &resStruct); err == nil {
+			if resStruct.TxHash != "" && strings.HasPrefix(resStruct.TxHash, "0x") {
+				return resStruct.TxHash, nil
+			}
+			if resStruct.ID != "" {
+				return c.waitForTransactionCompletion(ctx, resStruct.ID)
+			}
 		}
 	}
 
-	return "", fmt.Errorf("Circle Agent Stack execution failed: invalid response output")
+	log.Printf("[CircleAgentStack] CLI execution unavailable (%v): %s. Falling back to direct W3S Developer Wallet SwapRouter contract execution...", err, errBuf.String())
+
+	// Direct Circle W3S Developer-Controlled Wallet Swap Execution via RovaSwapRouter
+	routerAddr := c.Config.SwapRouterAddress
+	if routerAddr == "" {
+		routerAddr = "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
+	}
+
+	usdcAddr := c.Config.USDCContractAddress
+	if usdcAddr == "" {
+		usdcAddr = "0x3600000000000000000000000000000000000000"
+	}
+	eurcAddr := c.Config.EURCContractAddress
+	if eurcAddr == "" {
+		eurcAddr = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+	}
+
+	tokenIn := usdcAddr
+	tokenOut := eurcAddr
+	if sellCurrency == "EURC" {
+		tokenIn = eurcAddr
+		tokenOut = usdcAddr
+	}
+
+	amountIn := int64(amount * 1e6)
+	amountOutMin := int64(quote.EstimatedBuyAmount * 0.95 * 1e6) // 5% max slippage floor
+	deadline := time.Now().Unix() + 600
+
+	targetRecipient := walletAddress
+	if targetRecipient == "" {
+		targetRecipient = walletID
+	}
+
+	// 1. Approve SwapRouter contract to spend sell token
+	_, _ = c.ExecuteContractWithWallet(ctx, walletID, tokenIn, "approve(address,uint256)", []interface{}{routerAddr, fmt.Sprintf("%d", amountIn)})
+
+	// 2. Execute swapExactTokensForTokens on RovaSwapRouter
+	path := []interface{}{tokenIn, tokenOut}
+	params := []interface{}{
+		fmt.Sprintf("%d", amountIn),
+		fmt.Sprintf("%d", amountOutMin),
+		path,
+		targetRecipient,
+		fmt.Sprintf("%d", deadline),
+	}
+
+	return c.ExecuteContractWithWallet(ctx, walletID, routerAddr, "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)", params)
 }
 
 func (c *CircleClient) BridgeCCTP(ctx context.Context, walletAddress string, toChain string, amount float64) (string, error) {
