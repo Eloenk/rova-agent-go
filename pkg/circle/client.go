@@ -236,9 +236,10 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 
 	args := []string{
 		"-y", "@circle-fin/cli", "wallet", "swap",
-		"--from", sellCurrency,
-		"--to", buyCurrency,
-		"--amount", fmt.Sprintf("%.6f", amount),
+		sellCurrency,
+		fmt.Sprintf("%.6f", amount),
+		buyCurrency,
+		fmt.Sprintf("%.6f", quote.EstimatedBuyAmount),
 		"--chain", "ARC-TESTNET",
 		"--output", "json",
 	}
