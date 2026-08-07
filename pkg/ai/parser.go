@@ -1,11 +1,13 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -57,7 +59,15 @@ func NewAIParserWithConfig(cfg *config.Config) *AIParser {
 		Provider:     provider,
 		ModelName:    model,
 		HTTPClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 25 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   15 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+			},
 		},
 	}
 }
@@ -292,9 +302,9 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 		},
 		"temperature": 0.1,
 		"top_p":       1,
-		"max_tokens":  8192,
+		"max_tokens":  1024,
 		"seed":        42,
-		"stream":      false,
+		"stream":      true,
 	}
 
 	bodyBytes, err := json.Marshal(reqPayload)
@@ -307,7 +317,7 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	if p.NvidiaKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.NvidiaKey)
 	}
@@ -323,24 +333,35 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 		return nil, fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
-	respBytes, _ := io.ReadAll(resp.Body)
-	var nvidiaRes struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+	var fullText strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "data: ") {
+			dataStr := strings.TrimPrefix(line, "data: ")
+			if dataStr == "[DONE]" {
+				break
+			}
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
+				if len(chunk.Choices) > 0 {
+					fullText.WriteString(chunk.Choices[0].Delta.Content)
+				}
+			}
+		}
 	}
 
-	if err := json.Unmarshal(respBytes, &nvidiaRes); err != nil {
-		return nil, err
+	if fullText.Len() == 0 {
+		return nil, fmt.Errorf("empty streaming response from NVIDIA API")
 	}
 
-	if len(nvidiaRes.Choices) == 0 {
-		return nil, fmt.Errorf("empty response from NVIDIA API")
-	}
-
-	return cleanAndUnmarshalJSON(nvidiaRes.Choices[0].Message.Content)
+	return cleanAndUnmarshalJSON(fullText.String())
 }
 
 func cleanAndUnmarshalJSON(raw string) (*ParsedIntent, error) {
@@ -624,7 +645,7 @@ func (p *AIParser) generateTextNvidia(ctx context.Context, prompt string) (strin
 		},
 		"temperature": 0.7,
 		"top_p":       1,
-		"max_tokens":  8192,
+		"max_tokens":  1024,
 		"seed":        42,
 		"stream":      false,
 	}
