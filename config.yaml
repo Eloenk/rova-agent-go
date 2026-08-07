@@ -5,6 +5,7 @@ ai:
   #   "gemini"    - Primary Google Generative AI (Requires GOOGLE_GENERATIVE_AI_API_KEY)
   #   "anthropic" - Primary Anthropic Claude (Requires ANTHROPIC_API_KEY)
   #   "nvidia"    - NVIDIA NIM AI Router (https://integrate.api.nvidia.com/, Requires NVIDIA_API_KEY)
+  #   "regex"     - Direct 0ms Local Deterministic Pattern Matching Failsafe Parser
   #   "auto"      - Failover: Anthropic -> Gemini -> NVIDIA
   provider: "nvidia"
 

@@ -104,6 +104,10 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 	var errs []string
 	prov := strings.ToLower(p.Provider)
 
+	if prov == "regex" || prov == "local" {
+		return p.failsafeParse(userInput), nil
+	}
+
 	if prov == "gemini" {
 		if p.GeminiAPIKey == "" {
 			return nil, fmt.Errorf("gemini provider selected in config.yaml but GOOGLE_GENERATIVE_AI_API_KEY is missing")
