@@ -1,13 +1,11 @@
 package ai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -59,15 +57,7 @@ func NewAIParserWithConfig(cfg *config.Config) *AIParser {
 		Provider:     provider,
 		ModelName:    model,
 		HTTPClient: &http.Client{
-			Timeout: 25 * time.Second,
-			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-				DialContext: (&net.Dialer{
-					Timeout:   15 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				TLSHandshakeTimeout: 10 * time.Second,
-			},
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -134,7 +124,9 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 
 	// Provider == "auto" (Failover: Anthropic -> Gemini -> NVIDIA)
 	if p.AnthropicKey != "" {
-		intent, err := p.callAnthropic(ctx, userInput)
+		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		intent, err := p.callAnthropic(subCtx, userInput)
+		cancel()
 		if err == nil && intent != nil {
 			return intent, nil
 		}
@@ -144,7 +136,9 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 	}
 
 	if p.GeminiAPIKey != "" {
-		intent, err := p.callGemini(ctx, userInput)
+		subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		intent, err := p.callGemini(subCtx, userInput)
+		cancel()
 		if err == nil && intent != nil {
 			return intent, nil
 		}
@@ -153,7 +147,9 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 		}
 	}
 
-	intent, err := p.callNvidia(ctx, userInput)
+	subCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	intent, err := p.callNvidia(subCtx, userInput)
+	cancel()
 	if err == nil && intent != nil {
 		return intent, nil
 	}
@@ -170,7 +166,7 @@ func (p *AIParser) ParseIntentStrict(ctx context.Context, userInput string) (*Pa
 
 func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent, error) {
 	modelName := p.ModelName
-	if modelName == "" || modelName == "gemini-2.0-flash" {
+	if modelName == "" || !strings.Contains(modelName, "gemini") {
 		modelName = "gemini-flash-latest"
 	}
 
@@ -195,8 +191,11 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-goog-api-key", p.GeminiAPIKey)
+	key := strings.Trim(strings.TrimSpace(p.GeminiAPIKey), "\r\n\"'")
+	if key == "" {
+		key = strings.Trim(strings.TrimSpace(os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")), "\r\n\"'")
+	}
+	req.Header.Set("X-goog-api-key", key)
 
 	resp, err := p.HTTPClient.Do(req)
 	if err != nil {
@@ -233,8 +232,13 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 
 func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedIntent, error) {
 	url := "https://api.anthropic.com/v1/messages"
+	modelName := p.ModelName
+	if modelName == "" || !strings.Contains(modelName, "claude") {
+		modelName = "claude-3-5-sonnet-20240620"
+	}
+
 	reqPayload := map[string]interface{}{
-		"model":      "claude-3-5-sonnet-20240620",
+		"model":      modelName,
 		"max_tokens": 1024,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
@@ -251,7 +255,13 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("x-api-key", p.AnthropicKey)
+
+	key := strings.Trim(strings.TrimSpace(p.AnthropicKey), "\r\n\"'")
+	if key == "" {
+		key = strings.Trim(strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")), "\r\n\"'")
+	}
+
+	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -262,7 +272,8 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("anthropic API error (%d)", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
 	respBytes, _ := io.ReadAll(resp.Body)
@@ -290,21 +301,21 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 	}
 
 	modelToUse := p.ModelName
-	if modelToUse == "" {
+	if modelToUse == "" || !strings.Contains(modelToUse, "/") {
 		modelToUse = "z-ai/glm-5.2"
 	}
+
+	userContent := fmt.Sprintf("User Intent: %s\n\nReturn EXACT minified JSON only.", input)
 
 	reqPayload := map[string]interface{}{
 		"model": modelToUse,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": input},
+			{"role": "user", "content": userContent},
 		},
 		"temperature": 0.1,
-		"top_p":       1,
-		"max_tokens":  1024,
-		"seed":        42,
-		"stream":      true,
+		"max_tokens":  256,
+		"stream":      false,
 	}
 
 	bodyBytes, err := json.Marshal(reqPayload)
@@ -317,9 +328,15 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if p.NvidiaKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.NvidiaKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RovaAgent/1.0")
+	key := strings.TrimSpace(p.NvidiaKey)
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("NVIDIA_API_KEY"))
+	}
+	key = strings.Trim(key, "\r\n\"'")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := p.HTTPClient.Do(req)
@@ -333,35 +350,28 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 		return nil, fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var fullText strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "data: ") {
-			dataStr := strings.TrimPrefix(line, "data: ")
-			if dataStr == "[DONE]" {
-				break
-			}
-			var chunk struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
-				if len(chunk.Choices) > 0 {
-					fullText.WriteString(chunk.Choices[0].Delta.Content)
-				}
-			}
-		}
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
 	}
 
-	if fullText.Len() == 0 {
-		return nil, fmt.Errorf("empty streaming response from NVIDIA API")
+	var nvidiaRes struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
 
-	return cleanAndUnmarshalJSON(fullText.String())
+	if err := json.Unmarshal(respBytes, &nvidiaRes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal NVIDIA response: %v", err)
+	}
+
+	if len(nvidiaRes.Choices) == 0 {
+		return nil, fmt.Errorf("empty choices response from NVIDIA API")
+	}
+
+	return cleanAndUnmarshalJSON(nvidiaRes.Choices[0].Message.Content)
 }
 
 func cleanAndUnmarshalJSON(raw string) (*ParsedIntent, error) {

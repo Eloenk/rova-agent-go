@@ -30,7 +30,8 @@ func loadEnvFile(path string) {
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			val = strings.Trim(val, `"'`)
+			val = strings.Trim(val, "\r\n\"'")
+			val = strings.TrimSpace(val)
 			if os.Getenv(key) == "" {
 				os.Setenv(key, val)
 			}
@@ -49,22 +50,17 @@ func main() {
 	loadEnvFile("../rova/.env.local")
 	loadEnvFile("../rova/.env")
 
-	nvKey := os.Getenv("NVIDIA_API_KEY")
+	nvKey := strings.Trim(strings.TrimSpace(os.Getenv("NVIDIA_API_KEY")), "\r\n\"'")
+	os.Setenv("NVIDIA_API_KEY", nvKey)
 	if nvKey == "" {
 		log.Fatalf("❌ ERROR: NVIDIA_API_KEY environment variable is not set!")
 	}
 
 	fmt.Printf("✔ Loaded NVIDIA_API_KEY (Length: %d, Prefix: %s...)\n", len(nvKey), nvKey[:10])
 
-	cfg := &config.Config{
-		AIProvider: "nvidia",
-		AIModel:    "z-ai/glm-5.2",
-	}
-
+	cfg := config.LoadConfig()
+	cfg.AIProvider = "auto"
 	parser := ai.NewAIParserWithConfig(cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	testPrompts := []string{
 		"Send 15.5 USDC to 0x33c50a793fd2fa02ed0b54196ab4f1faf7bad046",
 		"Swap 100 USDC to EURC on Arc Testnet",
@@ -75,7 +71,9 @@ func main() {
 		fmt.Printf("\n🧪 Testing Intent: \"%s\"\n", prompt)
 		start := time.Now()
 
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		intent, err := parser.ParseIntentStrict(ctx, prompt)
+		cancel()
 		duration := time.Since(start)
 
 		if err != nil {

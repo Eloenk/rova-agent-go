@@ -128,7 +128,7 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 		}
 
 		log.Printf("[MeowBot] Inbound 1-on-1 message from %s: %s", senderPhone, text)
-		b.processIncomingCommand(context.Background(), senderJID, senderPhone, text)
+		go b.processIncomingCommand(context.Background(), senderJID, senderPhone, text)
 	}
 }
 

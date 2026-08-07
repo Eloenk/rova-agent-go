@@ -69,6 +69,12 @@ func (w *WatcherEngine) getActiveTargetWallets() []string {
 func (w *WatcherEngine) StartWatcher(ctx context.Context) {
 	ticker := time.NewTicker(w.Interval)
 
+	// Mode 0: Initialize Supabase Realtime WebSocket Push Subscription for Rules & Intents
+	if w.Store != nil {
+		log.Println("[Watcher Engine] Initializing Supabase Realtime WebSocket (wss://) Subscription...")
+		w.Store.StartRealtimeSubscription(ctx)
+	}
+
 	// Mode 1: Real-time WSS Event Subscription
 	if w.ChainClient != nil && w.ChainClient.Config != nil && w.ChainClient.Config.BalanceMode == "wss" {
 		log.Println("[Watcher Engine] Initializing Real-Time WSS Transfer Event Listener for Active Rule Wallets...")

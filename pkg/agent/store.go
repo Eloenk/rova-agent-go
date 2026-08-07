@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ type Store struct {
 	supabaseURL string
 	supabaseKey string
 	httpClient  *http.Client
+	realtime    *RealtimeClient
 }
 
 func NewStore() *Store {
@@ -42,6 +44,83 @@ func (s *Store) SetSupabaseCredentials(url, key string) {
 	defer s.mu.Unlock()
 	s.supabaseURL = url
 	s.supabaseKey = key
+}
+
+func (s *Store) StartRealtimeSubscription(ctx context.Context) {
+	s.mu.Lock()
+	url := s.supabaseURL
+	key := s.supabaseKey
+	s.mu.Unlock()
+
+	if url == "" || key == "" {
+		log.Println("[Store] Supabase credentials unconfigured. Realtime disabled.")
+		return
+	}
+
+	rc := NewRealtimeClient(url, key, s)
+	s.mu.Lock()
+	s.realtime = rc
+	s.mu.Unlock()
+
+	rc.Start(ctx)
+}
+
+func (s *Store) syncInitialState() {
+	rules, err := s.fetchRulesFromSupabase()
+	if err == nil {
+		s.mu.Lock()
+		for _, r := range rules {
+			s.rules[r.ID] = r
+		}
+		s.mu.Unlock()
+		log.Printf("[Realtime State Sync] Synchronized %d active rules into memory cache.", len(rules))
+	} else {
+		log.Printf("[Realtime State Sync] Error fetching initial rules: %v", err)
+	}
+
+	intents, err := s.fetchStandingIntentsFromSupabase()
+	if err == nil {
+		s.mu.Lock()
+		for _, i := range intents {
+			s.intents[i.ID] = i
+		}
+		s.mu.Unlock()
+		log.Printf("[Realtime State Sync] Synchronized %d active standing intents into memory cache.", len(intents))
+	} else {
+		log.Printf("[Realtime State Sync] Error fetching initial standing intents: %v", err)
+	}
+}
+
+func (s *Store) UpsertRuleFromRealtime(rule *AgentRule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rule.Status == StatusActive {
+		s.rules[rule.ID] = rule
+	} else {
+		delete(s.rules, rule.ID)
+	}
+}
+
+func (s *Store) RemoveRuleFromRealtime(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rules, id)
+}
+
+func (s *Store) UpsertStandingIntentFromRealtime(intent *StandingIntent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if intent.Status == StatusActive {
+		s.intents[intent.ID] = intent
+	} else {
+		delete(s.intents, intent.ID)
+	}
+}
+
+func (s *Store) RemoveStandingIntentFromRealtime(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.intents, id)
 }
 
 type supabaseRuleDto struct {
