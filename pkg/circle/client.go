@@ -234,14 +234,24 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 	fmt.Printf("[CircleAgentStackCLI] Executing swap via Circle Agent Stack CLI: %.2f %s -> %s (Rate: %.4f)\n",
 		amount, sellCurrency, buyCurrency, quote.ExchangeRate)
 
-	// Invoke Circle Agent Stack CLI (@circle-fin/cli) directly
-	cmd := exec.CommandContext(ctx, "npx", "-y", "@circle-fin/cli", "wallet", "swap",
+	args := []string{
+		"-y", "@circle-fin/cli", "wallet", "swap",
 		"--from", sellCurrency,
 		"--to", buyCurrency,
 		"--amount", fmt.Sprintf("%.6f", amount),
-		"--wallet", walletID,
+		"--chain", "ARC-TESTNET",
 		"--output", "json",
-	)
+	}
+
+	if walletAddress != "" {
+		args = append(args, "--address", walletAddress)
+	}
+	if walletID != "" && !strings.HasPrefix(walletID, "0x") {
+		args = append(args, "--wallet", walletID)
+	}
+
+	// Invoke Circle Agent Stack CLI (@circle-fin/cli) directly
+	cmd := exec.CommandContext(ctx, "npx", args...)
 
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("CIRCLE_API_KEY=%s", c.Config.CircleAPIKey),
