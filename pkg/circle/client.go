@@ -262,11 +262,16 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 		TxHash string `json:"txHash"`
 		ID     string `json:"id"`
 	}
-	if err := json.Unmarshal(outBuf.Bytes(), &resStruct); err == nil && resStruct.TxHash != "" {
-		return resStruct.TxHash, nil
+	if err := json.Unmarshal(outBuf.Bytes(), &resStruct); err == nil {
+		if resStruct.TxHash != "" {
+			return resStruct.TxHash, nil
+		}
+		if resStruct.ID != "" {
+			return c.waitForTransactionCompletion(ctx, resStruct.ID)
+		}
 	}
 
-	return fmt.Sprintf("cli-exec-%d", time.Now().UnixNano()), nil
+	return "", fmt.Errorf("Circle Agent Stack execution failed: invalid response output")
 }
 
 func (c *CircleClient) BridgeCCTP(ctx context.Context, walletAddress string, toChain string, amount float64) (string, error) {
@@ -386,8 +391,76 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 		return "", fmt.Errorf("failed to unmarshal Circle response: %w", err)
 	}
 
-	if res.Data.TxHash != "" {
+	if res.Data.TxHash != "" && strings.HasPrefix(res.Data.TxHash, "0x") {
 		return res.Data.TxHash, nil
 	}
-	return res.Data.ID, nil
+
+	txID := res.Data.ID
+	if txID == "" {
+		return "", fmt.Errorf("Circle API returned empty transaction ID")
+	}
+
+	// Poll until COMPLETE to retrieve true on-chain txHash starting with 0x (or error if state is FAILED / 422)
+	return c.waitForTransactionCompletion(ctx, txID)
+}
+
+func (c *CircleClient) waitForTransactionCompletion(ctx context.Context, txID string) (string, error) {
+	url := fmt.Sprintf("https://api.circle.com/v1/w3s/developer/transactions/%s", txID)
+
+	for i := 0; i < 30; i++ {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to create transaction status request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Config.CircleAPIKey)
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			log.Printf("[Circle] Error polling transaction status: %v", err)
+			continue
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode >= 400 {
+			log.Printf("[Circle] Polling error (%d): %s", resp.StatusCode, string(bodyBytes))
+			continue
+		}
+
+		var pollRes struct {
+			Data struct {
+				Transaction struct {
+					ID          string `json:"id"`
+					State       string `json:"state"`
+					TxHash      string `json:"txHash"`
+					ErrorReason string `json:"errorReason"`
+				} `json:"transaction"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(bodyBytes, &pollRes); err == nil {
+			tx := pollRes.Data.Transaction
+			if tx.State == "COMPLETE" {
+				if tx.TxHash != "" {
+					return tx.TxHash, nil
+				}
+				return tx.ID, nil
+			}
+			if tx.State == "FAILED" || tx.State == "CANCELLED" || tx.State == "DENIED" {
+				errReason := tx.ErrorReason
+				if errReason == "" {
+					errReason = "Transaction failed on Circle/Arc network"
+				}
+				return "", fmt.Errorf("Circle API transaction failed (State: %s): %s", tx.State, errReason)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("Circle transaction %s timed out after 30 seconds waiting for on-chain confirmation", txID)
 }
