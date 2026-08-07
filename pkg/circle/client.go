@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -119,9 +120,14 @@ func (c *CircleClient) generateEntitySecretCiphertext() (string, error) {
 		return "", fmt.Errorf("CIRCLE_ENTITY_SECRET is not configured")
 	}
 
-	// Circle expects the hex string bytes (not decoded hex) to be encrypted
+	// Circle expects the 32 raw decoded bytes of the 64-char hex entity secret to be encrypted
+	rawBytes, err := hex.DecodeString(strings.TrimSpace(entitySecretHex))
+	if err != nil {
+		return "", fmt.Errorf("failed to hex-decode CIRCLE_ENTITY_SECRET: %w", err)
+	}
+
 	hash := sha256.New()
-	ciphertext, err := rsa.EncryptOAEP(hash, rand.Reader, pubKey, []byte(entitySecretHex), nil)
+	ciphertext, err := rsa.EncryptOAEP(hash, rand.Reader, pubKey, rawBytes, nil)
 	if err != nil {
 		return "", fmt.Errorf("RSA-OAEP encryption of entity secret failed: %w", err)
 	}
