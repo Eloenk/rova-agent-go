@@ -191,8 +191,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 
 			targetWallets := getTargetWallets()
 			if len(targetWallets) == 0 {
-				log.Println("[Chain WSS] No active wallets with rules/intents found. Checking again in 10s...")
-				time.Sleep(10 * time.Second)
+				time.Sleep(5 * time.Second)
 				continue
 			}
 
@@ -207,8 +206,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 			}
 
 			if len(toTopicHashes) == 0 {
-				log.Println("[Chain WSS] No valid 0x wallet addresses found in active rules. Retrying in 10s...")
-				time.Sleep(10 * time.Second)
+				time.Sleep(5 * time.Second)
 				continue
 			}
 
