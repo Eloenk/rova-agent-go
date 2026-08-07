@@ -6,13 +6,13 @@ ai:
   #   "anthropic" - Primary Anthropic Claude (Requires ANTHROPIC_API_KEY)
   #   "nvidia"    - NVIDIA NIM AI Router (https://integrate.api.nvidia.com/, Requires NVIDIA_API_KEY)
   #   "auto"      - Failover: Anthropic -> Gemini -> NVIDIA
-  provider: "auto"
+  provider: "nvidia"
 
   # Model names (leave blank for automatic provider defaults):
   #   Gemini options:    "gemini-2.0-flash", "gemini-1.5-pro"
   #   Anthropic options: "claude-3-5-sonnet-20240620"
   #   NVIDIA options:    "z-ai/glm-5.2", "meta/llama-3.1-405b-instruct"
-  model: "gemini-flash-latest"
+  model: "z-ai/glm-5.2"
 
   # Fallback controls:
   #   Set allow_regex_fallback to true to enable local regex intent parsing when AI APIs are rate-limited.
