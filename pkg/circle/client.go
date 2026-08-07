@@ -405,7 +405,7 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 }
 
 func (c *CircleClient) waitForTransactionCompletion(ctx context.Context, txID string) (string, error) {
-	url := fmt.Sprintf("https://api.circle.com/v1/w3s/developer/transactions/%s", txID)
+	url := fmt.Sprintf("https://api.circle.com/v1/w3s/transactions/%s", txID)
 
 	for i := 0; i < 30; i++ {
 		select {
