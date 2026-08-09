@@ -44,29 +44,32 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 		}, nil
 	}
 
-	// Mode 2: Direct ECDSA RPC transactions
-	if cfg.PrivateKey == "" {
-		return nil, fmt.Errorf("ROVA_AGENT_PRIVATE_KEY is required for direct RPC execution mode")
+	// Mode 2: Direct ECDSA RPC transactions (or Read-Only RPC)
+	var client *ethclient.Client
+	if cfg.ArcRPCURL != "" {
+		c, err := ethclient.Dial(cfg.ArcRPCURL)
+		if err == nil {
+			client = c
+		}
 	}
 
-	client, err := ethclient.Dial(cfg.ArcRPCURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Arc RPC: %w", err)
-	}
+	var privateKey *ecdsa.PrivateKey
+	var fromAddress common.Address
 
-	cleanKey := strings.TrimPrefix(cfg.PrivateKey, "0x")
-	privateKey, err := crypto.HexToECDSA(cleanKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %w", err)
+	if cfg.PrivateKey != "" {
+		cleanKey := strings.TrimPrefix(cfg.PrivateKey, "0x")
+		pk, err := crypto.HexToECDSA(cleanKey)
+		if err == nil {
+			privateKey = pk
+			if pubKeyECDSA, ok := pk.Public().(*ecdsa.PublicKey); ok {
+				fromAddress = crypto.PubkeyToAddress(*pubKeyECDSA)
+			}
+		} else {
+			log.Printf("[ChainClient] Warning: Failed to parse private key: %v", err)
+		}
+	} else {
+		log.Println("[ChainClient] Notice: ROVA_AGENT_PRIVATE_KEY not set. Operating in read-only / Circle custody mode.")
 	}
-
-	publicKey := privateKey.Public()
-	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("error casting public key to ECDSA")
-	}
-
-	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 
 	return &ChainClient{
 		RPCClient:    client,
@@ -153,19 +156,11 @@ func (c *ChainClient) GetBalanceERC20WithFailover(ctx context.Context, walletAdd
 }
 
 func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
-	usdcAddr := c.Config.USDCContractAddress
-	if usdcAddr == "" {
-		usdcAddr = "0x3600000000000000000000000000000000000000"
-	}
-	return c.GetBalanceERC20WithFailover(ctx, walletAddress, usdcAddr)
+	return c.GetBalanceERC20WithFailover(ctx, walletAddress, c.Config.USDCContractAddress)
 }
 
 func (c *ChainClient) GetBalanceEURCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
-	eurcAddr := c.Config.EURCContractAddress
-	if eurcAddr == "" {
-		eurcAddr = "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
-	}
-	return c.GetBalanceERC20WithFailover(ctx, walletAddress, eurcAddr)
+	return c.GetBalanceERC20WithFailover(ctx, walletAddress, c.Config.EURCContractAddress)
 }
 
 func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWallets func() []string, onTransfer func(toAddress string, amount float64, txHash string)) {
@@ -175,9 +170,6 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 	}
 
 	usdcAddressHex := c.Config.USDCContractAddress
-	if usdcAddressHex == "" {
-		usdcAddressHex = "0x3600000000000000000000000000000000000000"
-	}
 	usdcAddress := common.HexToAddress(usdcAddressHex)
 	transferTopic := crypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
 

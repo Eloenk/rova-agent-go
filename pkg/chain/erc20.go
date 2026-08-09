@@ -65,3 +65,37 @@ func (c *ChainClient) GetUSDCBalance(ctx context.Context, target string) (float6
 
 	return usdcVal, nil
 }
+
+func (c *ChainClient) GetEURCBalance(ctx context.Context, target string) (float64, error) {
+	if c.RPCClient == nil {
+		return c.GetBalanceEURCWithFailover(ctx, target)
+	}
+
+	eurcAddr := c.Config.EURCContractAddress
+
+	targetAddr := common.HexToAddress(target)
+	eurcContract := common.HexToAddress(eurcAddr)
+
+	methodID := crypto.Keccak256([]byte("balanceOf(address)"))[:4]
+	paddedAddress := common.LeftPadBytes(targetAddr.Bytes(), 32)
+
+	var data []byte
+	data = append(data, methodID...)
+	data = append(data, paddedAddress...)
+
+	msg := ethereum.CallMsg{
+		To:   &eurcContract,
+		Data: data,
+	}
+
+	res, err := c.RPCClient.CallContract(ctx, msg, nil)
+	if err != nil {
+		return 0, fmt.Errorf("balanceOf call failed: %w", err)
+	}
+
+	balanceBig := new(big.Int).SetBytes(res)
+	balanceFloat := new(big.Float).SetInt(balanceBig)
+	eurcVal, _ := new(big.Float).Quo(balanceFloat, big.NewFloat(1e6)).Float64()
+
+	return eurcVal, nil
+}

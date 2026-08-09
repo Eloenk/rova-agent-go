@@ -59,9 +59,10 @@ arc:
 
 swap:
   # Swap strategy options:
-  #   "circle_agent_stack" - Circle Agent Stack Native Swap Engine
-  #   "smart_contract"     - Uniswap-style Swap Router smart contract (RovaSwapRouter.sol)
-  strategy: "circle_agent_stack"
+  #   "sidecar_uds"    - High-performance Unix Domain Socket Node.js Sidecar (Circle AppKit)
+  #   "smart_contract" - Uniswap-style Swap Router smart contract (RovaSwapRouter.sol)
+  strategy: "sidecar_uds"
+  sidecar_socket: "/tmp/rova-swap.sock"
   router_address: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
   slippage_bps: 50
   enable_fallback: false

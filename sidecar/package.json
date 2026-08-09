@@ -1,0 +1,15 @@
+{
+  "name": "rova-swap-sidecar",
+  "version": "1.0.0",
+  "description": "High-performance Node.js Unix Domain Socket (UDS) Swap Sidecar for Rova Go Agent",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@circle-fin/app-kit": "^1.0.0",
+    "@circle-fin/developer-controlled-wallets": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

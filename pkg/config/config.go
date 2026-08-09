@@ -41,6 +41,7 @@ type YAMLConfig struct {
 	} `yaml:"vault"`
 	Swap struct {
 		Strategy      string `yaml:"strategy"`
+		SidecarSocket string `yaml:"sidecar_socket"`
 		RouterAddress string `yaml:"router_address"`
 		SlippageBps   int    `yaml:"slippage_bps"`
 	} `yaml:"swap"`
@@ -74,6 +75,7 @@ type Config struct {
 	AppURL                      string
 	VaultStrategy               string
 	SwapStrategy                string
+	SwapSidecarSocket           string
 	SwapRouterAddress           string
 }
 
@@ -131,9 +133,9 @@ func LoadConfig() *Config {
 		BalancePollInterval:         pollInterval,
 		ChainID:                     fallbackInt(y.Arc.ChainID, 5042002),
 		PrivateKey:                  os.Getenv("ROVA_AGENT_PRIVATE_KEY"),
-		ExecutionLogContractAddress: getEnv("NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS", fallback(y.Arc.ExecutionLogAddress, "0x0000000000000000000000000000000000000000")),
-		USDCContractAddress:         getEnv("ARC_USDC_ADDRESS", fallback(y.Arc.USDCAddress, "0x3600000000000000000000000000000000000000")),
-		EURCContractAddress:         getEnv("ARC_EURC_ADDRESS", fallback(y.Arc.EURCAddress, "0x3600000000000000000000000000000000000001")),
+		ExecutionLogContractAddress: getEnv("NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS", y.Arc.ExecutionLogAddress),
+		USDCContractAddress:         fallback(y.Arc.USDCAddress, os.Getenv("ARC_USDC_ADDRESS")),
+		EURCContractAddress:         fallback(y.Arc.EURCAddress, os.Getenv("ARC_EURC_ADDRESS")),
 		CircleAPIKey:                os.Getenv("CIRCLE_API_KEY"),
 		CircleEntitySecret:          os.Getenv("CIRCLE_ENTITY_SECRET"),
 		CircleWalletID:              os.Getenv("CIRCLE_WALLET_ID"),
@@ -143,7 +145,8 @@ func LoadConfig() *Config {
 		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
 		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
 		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "circle_wallet")),
-		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "circle_agent_stack")),
+		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "sidecar_uds")),
+		SwapSidecarSocket:           getEnv("ROVA_SWAP_SOCKET", fallback(y.Swap.SidecarSocket, "/tmp/rova-swap.sock")),
 		SwapRouterAddress:           getEnv("NEXT_PUBLIC_ROVA_SWAP_ROUTER_ADDRESS", fallback(y.Swap.RouterAddress, "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA")),
 	}
 }
