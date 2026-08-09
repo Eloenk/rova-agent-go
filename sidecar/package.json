@@ -7,6 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@circle-fin/adapter-circle-wallets": "^1.0.0",
     "@circle-fin/app-kit": "^1.0.0",
     "@circle-fin/developer-controlled-wallets": "^1.0.0",
     "dotenv": "^16.4.5",
