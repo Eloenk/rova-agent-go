@@ -7,10 +7,12 @@ const app = express();
 app.use(express.json());
 
 const SOCKET_PATH = process.env.ROVA_SWAP_SOCKET || '/tmp/rova-swap.sock';
-const PORT = process.env.PORT || process.env.SWAP_SIDECAR_PORT;
+const isWindows = process.platform === 'win32';
+// On Linux/macOS, ignore generic PORT=8080 from environment and use UDS unless SWAP_SIDECAR_PORT is explicitly set
+const explicitTcpPort = process.env.SWAP_SIDECAR_PORT || (isWindows ? (process.env.PORT || 3001) : null);
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true, status: 'online', socket: SOCKET_PATH });
+  res.json({ ok: true, status: 'online', mode: explicitTcpPort ? 'tcp' : 'uds', socket: SOCKET_PATH });
 });
 
 app.post('/api/swap/quote', async (req, res) => {
@@ -45,10 +47,9 @@ app.post('/api/swap', async (req, res) => {
   }
 });
 
-if (PORT || process.platform === 'win32') {
-  const listenPort = PORT || 3001;
-  app.listen(listenPort, () => {
-    console.log(`[SwapSidecar] HTTP Server listening on TCP port ${listenPort}`);
+if (explicitTcpPort) {
+  app.listen(explicitTcpPort, () => {
+    console.log(`[SwapSidecar] HTTP Server listening on TCP port ${explicitTcpPort}`);
   });
 } else {
   if (fs.existsSync(SOCKET_PATH)) {
