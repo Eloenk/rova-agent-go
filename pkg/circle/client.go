@@ -381,25 +381,55 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 		return "", fmt.Errorf("Circle API key is required for savings vault deposit")
 	}
 
-	strategy := c.Config.VaultStrategy
-	if strategy == "smart_contract" {
-		vaultAddr := os.Getenv("ROVA_SAVINGS_VAULT_ADDRESS")
-		if vaultAddr != "" {
-			tokenAddr := c.Config.USDCContractAddress
-			amountInt := int64(amount * 1e6)
-			lockDuration := int64(30 * 86400)
-
-			_, _ = c.ExecuteContract(ctx, tokenAddr, "approve(address,uint256)", []interface{}{vaultAddr, fmt.Sprintf("%d", amountInt)})
-			params := []interface{}{tokenAddr, fmt.Sprintf("%d", amountInt), fmt.Sprintf("%d", lockDuration)}
-			return c.ExecuteContract(ctx, vaultAddr, "depositSavings(address,uint256,uint256)", params)
-		}
+	vaultAddr := os.Getenv("ROVA_SAVINGS_VAULT_ADDRESS")
+	if vaultAddr == "" {
+		vaultAddr = "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
 	}
 
-	targetWallet := savingsSubWallet
-	if targetWallet == "" {
-		targetWallet = userWallet
+	tokenAddr := c.Config.USDCContractAddress
+	if tokenAddr == "" {
+		tokenAddr = "0x3600000000000000000000000000000000000000"
 	}
-	return c.TransferUSDC(ctx, targetWallet, amount)
+
+	amountInt := int64(amount * 1e6)
+	lockDuration := int64(30 * 86400) // Default 30-day timelock if unassigned
+
+	execWallet := userWallet
+	if execWallet == "" {
+		execWallet = c.Config.CircleWalletID
+	}
+
+	log.Printf("[Savings Vault] Executing smart contract deposit: %.2f USDC into %s (Lock: 30 days)", amount, vaultAddr)
+
+	// Step 1: Approve RovaSavingsVault contract to spend USDC
+	_, err := c.ExecuteContractWithWallet(ctx, execWallet, tokenAddr, "approve(address,uint256)", []interface{}{vaultAddr, fmt.Sprintf("%d", amountInt)})
+	if err != nil {
+		return "", fmt.Errorf("failed to approve USDC for RovaSavingsVault: %w", err)
+	}
+
+	// Step 2: Deposit into RovaSavingsVault timelock contract
+	params := []interface{}{tokenAddr, fmt.Sprintf("%d", amountInt), fmt.Sprintf("%d", lockDuration)}
+	return c.ExecuteContractWithWallet(ctx, execWallet, vaultAddr, "depositSavings(address,uint256,uint256)", params)
+}
+
+func (c *CircleClient) RedeemSavingsVault(ctx context.Context, userWallet string, depositID int64) (string, error) {
+	if c.Config.CircleAPIKey == "" {
+		return "", fmt.Errorf("Circle API key is required for savings vault redemption")
+	}
+
+	vaultAddr := os.Getenv("ROVA_SAVINGS_VAULT_ADDRESS")
+	if vaultAddr == "" {
+		vaultAddr = "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
+	}
+
+	execWallet := userWallet
+	if execWallet == "" {
+		execWallet = c.Config.CircleWalletID
+	}
+
+	log.Printf("[Savings Vault] Executing smart contract redeem: depositId #%d from %s", depositID, vaultAddr)
+
+	return c.ExecuteContractWithWallet(ctx, execWallet, vaultAddr, "redeemSavings(uint256)", []interface{}{fmt.Sprintf("%d", depositID)})
 }
 
 func (c *CircleClient) ExecuteContract(ctx context.Context, contractAddress string, functionSig string, params []interface{}) (string, error) {

@@ -1,4 +1,6 @@
-require("dotenv").config({ path: [".env.local", ".env", "../.env.local", "../.env"] });
+require("dotenv").config({ path: "../.env.local" });
+require("dotenv").config({ path: "../.env" });
+require("dotenv").config();
 
 const { AppKit, SwapChain } = require("@circle-fin/app-kit");
 const { createCircleWalletsAdapter } = require("@circle-fin/adapter-circle-wallets");

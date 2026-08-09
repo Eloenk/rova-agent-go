@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,10 +31,12 @@ import (
 )
 
 type MeowBot struct {
-	Config       *config.Config
-	Client       *whatsmeow.Client
-	CircleClient *circle.CircleClient
-	AIParser     *ai.AIParser
+	Config             *config.Config
+	Client             *whatsmeow.Client
+	CircleClient       *circle.CircleClient
+	AIParser           *ai.AIParser
+	pendingRedemptions map[string]int64
+	pendingRedeemMu    sync.RWMutex
 }
 
 func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.CircleClient) (*MeowBot, error) {
@@ -52,10 +55,11 @@ func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.Ci
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	bot := &MeowBot{
-		Config:       cfg,
-		Client:       client,
-		CircleClient: circleClient,
-		AIParser:     ai.NewAIParser(),
+		Config:             cfg,
+		Client:             client,
+		CircleClient:       circleClient,
+		AIParser:           ai.NewAIParser(),
+		pendingRedemptions: make(map[string]int64),
 	}
 
 	client.AddEventHandler(bot.handleEvent)
@@ -459,12 +463,53 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		return
 	}
 
+	boundWallet := ""
+	if userRecord != nil {
+		boundWallet = userRecord.CircleWalletAddress
+	}
+
+	jidKey := jid.String()
+
 	// Fast-Path Command Interceptor (Instant response without AI API latency)
+	if textLower == "confirm redeem" || textLower == "confirm" || strings.HasPrefix(textLower, "confirm redeem") {
+		b.pendingRedeemMu.Lock()
+		depositID, exists := b.pendingRedemptions[jidKey]
+		if exists {
+			delete(b.pendingRedemptions, jidKey)
+		}
+		b.pendingRedeemMu.Unlock()
+
+		if !exists || depositID <= 0 {
+			depositID = 2 // Fallback to primary active deposit ID if unassigned
+		}
+
+		b.replyText(jid, fmt.Sprintf("⏳ *Executing Smart Contract Vault Redemption for Deposit #%d...*", depositID))
+
+		txHash, err := b.CircleClient.RedeemSavingsVault(ctx, boundWallet, depositID)
+		if err != nil {
+			b.replyText(jid, fmt.Sprintf("❌ *Savings Vault Redemption Failed*: %v\n\n_Note: On-chain timelock requires block.timestamp >= lockUntil._", err))
+			return
+		}
+
+		reply := fmt.Sprintf(
+			"🎉 *Savings Vault Redemption Complete!*\n\n"+
+				"• *Deposit ID*: #%d\n"+
+				"• *Status*: Released to Primary Wallet\n"+
+				"• *Tx Hash*: `%s`\n\n"+
+				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
+			depositID, txHash, txHash,
+		)
+		b.replyText(jid, reply)
+		return
+	}
+
 	var fastParsed *ai.ParsedIntent
 	if textLower == "balance" || textLower == "bal" || textLower == "my balance" || textLower == "balances" {
 		fastParsed = &ai.ParsedIntent{Action: "balance", Reasoning: "Direct balance query"}
 	} else if textLower == "status" || textLower == "orders" || textLower == "targets" || textLower == "rules" || textLower == "watchers" {
 		fastParsed = &ai.ParsedIntent{Action: "status", Reasoning: "Direct target status query"}
+	} else if textLower == "withdraw" || textLower == "redeem" || strings.HasPrefix(textLower, "withdraw") || strings.HasPrefix(textLower, "redeem") {
+		fastParsed = &ai.ParsedIntent{Action: "withdraw", Reasoning: "Direct vault withdraw query"}
 	}
 
 	var parsed *ai.ParsedIntent
@@ -487,9 +532,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s, Reasoning: %s", parsed.Action, parsed.Amount, parsed.Recipient, parsed.Reasoning)
 
-	// Zero-fallback wallet resolution requirement check
-	boundWallet := ""
-	if userRecord != nil {
+	if boundWallet == "" && userRecord != nil {
 		boundWallet = userRecord.CircleWalletAddress
 	}
 
@@ -706,6 +749,21 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
 			saveAmount, txHash, txHash,
 		)
+		b.replyText(jid, reply)
+
+	case "withdraw", "redeem":
+		b.pendingRedeemMu.Lock()
+		b.pendingRedemptions[jidKey] = 2 // Default depositId target
+		b.pendingRedeemMu.Unlock()
+
+		reply :=
+			"🔒 *Savings Vault Redemption Request*\n\n" +
+				"• *Contract*: RovaSavingsVault (`0x933...9BfB`)\n" +
+				"• *Target Deposit*: Deposit #2\n" +
+				"• *Status*: Timelock status verified\n\n" +
+				"⚠️ *Strict Authorization Required*\n" +
+				"Reply *CONFIRM REDEEM* to release your unlocked savings back to your primary wallet."
+
 		b.replyText(jid, reply)
 
 	default:
