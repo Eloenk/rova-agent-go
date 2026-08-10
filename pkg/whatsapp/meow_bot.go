@@ -487,7 +487,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		txHash, err := b.CircleClient.RedeemSavingsVault(ctx, boundWallet, depositID)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Savings Vault Redemption Failed*: %v\n\n_Note: On-chain timelock requires block.timestamp >= lockUntil._", err))
+			log.Printf("[MeowBot Error] Redemption failed for %s: %v", jidKey, err)
+			b.replyText(jid, "❌ *Redemption Unavailable*: Your deposit is currently locked in the smart contract vault timelock. Please wait until the timelock expires before redeeming.")
 			return
 		}
 
@@ -580,7 +581,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		resolvedWallet, err := b.resolveRecipientAddress(targetRecipient)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Recipient Lookup Failed*: %v\n\n_Make sure they are registered on Rova!_", err))
+			log.Printf("[MeowBot Error] Recipient lookup failed for %s: %v", targetRecipient, err)
+			b.replyText(jid, "❌ *Recipient Not Found*: The specified recipient is not registered on Rova or the address is invalid. Please double check and try again.")
 			return
 		}
 
@@ -593,7 +595,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		txHash, err := b.CircleClient.TransferUSDCFromWallet(ctx, boundWallet, resolvedWallet, sendAmount)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Transaction Failed*: %v", err))
+			log.Printf("[MeowBot Error] Transfer failed from %s to %s: %v", boundWallet, resolvedWallet, err)
+			b.replyText(jid, "❌ *Transfer Failed*: Unable to complete transfer. Please check your available balance and try again.")
 			return
 		}
 
@@ -628,7 +631,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		txHash, err := b.CircleClient.SwapStablecoins(ctx, boundWallet, buyCurr, swapAmount)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Swap Failed*: %v", err))
+			log.Printf("[MeowBot Error] Swap failed for wallet %s: %v", boundWallet, err)
+			b.replyText(jid, "❌ *Swap Failed*: Unable to execute swap at this time. Please check your available USDC balance and try again.")
 			return
 		}
 
@@ -662,7 +666,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		txHash, err := b.CircleClient.BridgeCCTP(ctx, boundWallet, sourceChain, bridgeAmount)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Bridge Failed*: %v", err))
+			log.Printf("[MeowBot Error] Bridge failed for wallet %s: %v", boundWallet, err)
+			b.replyText(jid, "❌ *Bridge Failed*: Cross-chain bridge request could not be processed right now. Please try again shortly.")
 			return
 		}
 
@@ -737,7 +742,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		txHash, err := b.CircleClient.DepositSavingsVault(ctx, boundWallet, savingsTarget, saveAmount)
 		if err != nil {
-			b.replyText(jid, fmt.Sprintf("❌ *Savings Deposit Failed*: %v", err))
+			log.Printf("[MeowBot Error] Vault deposit failed for wallet %s: %v", boundWallet, err)
+			b.replyText(jid, "❌ *Savings Deposit Failed*: Unable to deposit into the savings vault. Please check your wallet balance and try again.")
 			return
 		}
 
