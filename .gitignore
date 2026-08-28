@@ -3,3 +3,5 @@
 *.exe
 *.db
 bin/
+.agent/
+.agents/
