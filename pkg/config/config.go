@@ -52,6 +52,7 @@ type YAMLConfig struct {
 type Config struct {
 	ExecutionMode               string
 	ExecutionEnabled            bool
+	AutonomousExecutionEnabled  bool
 	WhatsAppExecutionEnabled    bool
 	MaxAutonomousAmount         float64
 	MaxWhatsAppActionAmount     float64
@@ -130,6 +131,7 @@ func LoadConfig() *Config {
 	return &Config{
 		ExecutionMode:               mode,
 		ExecutionEnabled:            getBoolEnv("ROVA_EXECUTION_ENABLED", false),
+		AutonomousExecutionEnabled:  getBoolEnv("ROVA_AUTONOMOUS_EXECUTION_ENABLED", false),
 		WhatsAppExecutionEnabled:    getBoolEnv("ROVA_WHATSAPP_EXECUTION_ENABLED", false),
 		MaxAutonomousAmount:         getPositiveFloatEnv("ROVA_MAX_AUTONOMOUS_AMOUNT_USDC", 100),
 		MaxWhatsAppActionAmount:     getPositiveFloatEnv("ROVA_MAX_WHATSAPP_AMOUNT_USDC", 100),

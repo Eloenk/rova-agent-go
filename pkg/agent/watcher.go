@@ -358,7 +358,7 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 }
 
 func (w *WatcherEngine) canExecuteAutomatically(amount float64) bool {
-	if w.ChainClient == nil || w.ChainClient.Config == nil || !w.ChainClient.Config.ExecutionEnabled {
+	if w.ChainClient == nil || w.ChainClient.Config == nil || !w.ChainClient.Config.ExecutionEnabled || !w.ChainClient.Config.AutonomousExecutionEnabled {
 		return false
 	}
 	if amount == 0 {
