@@ -2,12 +2,17 @@ package whatsapp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,12 +36,24 @@ import (
 )
 
 type MeowBot struct {
-	Config             *config.Config
-	Client             *whatsmeow.Client
-	CircleClient       *circle.CircleClient
-	AIParser           *ai.AIParser
-	pendingRedemptions map[string]int64
-	pendingRedeemMu    sync.RWMutex
+	Config          *config.Config
+	Client          *whatsmeow.Client
+	CircleClient    *circle.CircleClient
+	AIParser        *ai.AIParser
+	pendingActions  map[string]pendingAction
+	pendingActionMu sync.Mutex
+}
+
+type pendingAction struct {
+	ConfirmationCode string
+	Action           string
+	WalletAddress    string
+	Recipient        string
+	BuyCurrency      string
+	DestinationChain string
+	Amount           float64
+	DepositID        int64
+	ExpiresAt        time.Time
 }
 
 func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.CircleClient) (*MeowBot, error) {
@@ -55,11 +72,11 @@ func NewMeowBot(ctx context.Context, cfg *config.Config, circleClient *circle.Ci
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	bot := &MeowBot{
-		Config:             cfg,
-		Client:             client,
-		CircleClient:       circleClient,
-		AIParser:           ai.NewAIParser(),
-		pendingRedemptions: make(map[string]int64),
+		Config:         cfg,
+		Client:         client,
+		CircleClient:   circleClient,
+		AIParser:       ai.NewAIParser(),
+		pendingActions: make(map[string]pendingAction),
 	}
 
 	client.AddEventHandler(bot.handleEvent)
@@ -131,7 +148,7 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 			return
 		}
 
-		log.Printf("[MeowBot] Inbound 1-on-1 message from %s: %s", senderPhone, text)
+		log.Printf("[MeowBot] Inbound 1-on-1 message from %s (%d characters)", senderPhone, len(text))
 		go b.processIncomingCommand(context.Background(), senderJID, senderPhone, text)
 	}
 }
@@ -147,8 +164,8 @@ type supabaseUserRecord struct {
 }
 
 func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
-		log.Printf("[MeowBot] Supabase URL/AnonKey unconfigured. Rejecting unauthenticated access for phone: %s", phone)
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
+		log.Printf("[MeowBot] Supabase service credentials are unconfigured. Rejecting access for phone: %s", phone)
 		return nil, false
 	}
 
@@ -161,8 +178,8 @@ func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) 
 		log.Printf("[MeowBot] Supabase request creation error: %v", err)
 		return nil, false
 	}
-	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -197,7 +214,7 @@ func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
 		return clean, nil
 	}
 
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
 		return "", fmt.Errorf("database unconfigured; unable to resolve recipient %s", clean)
 	}
 
@@ -218,8 +235,8 @@ func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create query for recipient %s: %v", clean, err)
 	}
-	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -243,20 +260,21 @@ func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
 }
 
 func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
 		return "", false
 	}
 
 	cleanToken := strings.TrimSpace(token)
-	queryURL := fmt.Sprintf("%s/rest/v1/otp_codes?select=id,email,code,expires_at&code=eq.%s&limit=1",
-		b.Config.SupabaseURL, cleanToken)
+	tokenHash := sha256.Sum256([]byte(cleanToken))
+	queryURL := fmt.Sprintf("%s/rest/v1/whatsapp_link_tokens?select=email,expires_at&token_hash=eq.%s&limit=1",
+		b.Config.SupabaseURL, hex.EncodeToString(tokenHash[:]))
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
 		return "", false
 	}
-	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -266,9 +284,7 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 	defer resp.Body.Close()
 
 	var records []struct {
-		ID        string `json:"id"`
 		Email     string `json:"email"`
-		Code      string `json:"code"`
 		ExpiresAt string `json:"expires_at"`
 	}
 
@@ -279,7 +295,7 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 	record := records[0]
 	if t, err := time.Parse(time.RFC3339, record.ExpiresAt); err == nil {
 		if time.Now().After(t) {
-			log.Printf("[MeowBot] Binding token %s expired at %v", cleanToken, t)
+			log.Printf("[MeowBot] WhatsApp link token expired at %v", t)
 			return "", false
 		}
 	}
@@ -292,11 +308,12 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 		"whatsapp_number": formattedPhone,
 	})
 
-	updateURL := fmt.Sprintf("%s/rest/v1/users?email=eq.%s", b.Config.SupabaseURL, record.Email)
+	escapedEmail := url.QueryEscape(record.Email)
+	updateURL := fmt.Sprintf("%s/rest/v1/users?email=eq.%s", b.Config.SupabaseURL, escapedEmail)
 	patchReq, err := http.NewRequest("PATCH", updateURL, strings.NewReader(string(updateBody)))
 	if err == nil {
-		patchReq.Header.Set("apikey", b.Config.SupabaseAnonKey)
-		patchReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+		patchReq.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+		patchReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 		patchReq.Header.Set("Content-Type", "application/json")
 		patchReq.Header.Set("Prefer", "return=minimal")
 		if patchResp, err := client.Do(patchReq); err == nil {
@@ -305,23 +322,113 @@ func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
 		}
 	}
 
-	// Delete used token from otp_codes
-	deleteURL := fmt.Sprintf("%s/rest/v1/otp_codes?id=eq.%s", b.Config.SupabaseURL, record.ID)
+	deleteURL := fmt.Sprintf("%s/rest/v1/whatsapp_link_tokens?email=eq.%s", b.Config.SupabaseURL, escapedEmail)
 	delReq, err := http.NewRequest("DELETE", deleteURL, nil)
 	if err == nil {
-		delReq.Header.Set("apikey", b.Config.SupabaseAnonKey)
-		delReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+		delReq.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+		delReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 		if delResp, err := client.Do(delReq); err == nil {
 			delResp.Body.Close()
 		}
 	}
 
-	log.Printf("[MeowBot] SUCCESS: Bound phone %s to user %s via token %s", formattedPhone, record.Email, cleanToken)
+	log.Printf("[MeowBot] Bound phone %s to user %s", formattedPhone, record.Email)
 	return record.Email, true
 }
 
+func (b *MeowBot) queuePendingAction(jid string, action pendingAction) (string, error) {
+	if !b.executionAvailable() {
+		return "", fmt.Errorf("WhatsApp execution is disabled")
+	}
+
+	randomBytes := make([]byte, 4)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+
+	action.ConfirmationCode = strings.ToUpper(hex.EncodeToString(randomBytes))
+	action.ExpiresAt = time.Now().Add(5 * time.Minute)
+	b.pendingActionMu.Lock()
+	b.pendingActions[jid] = action
+	b.pendingActionMu.Unlock()
+	return action.ConfirmationCode, nil
+}
+
+func (b *MeowBot) consumePendingAction(jid, code string) (pendingAction, bool) {
+	b.pendingActionMu.Lock()
+	defer b.pendingActionMu.Unlock()
+
+	action, exists := b.pendingActions[jid]
+	if !exists || time.Now().After(action.ExpiresAt) || !strings.EqualFold(action.ConfirmationCode, strings.TrimSpace(code)) {
+		if exists && time.Now().After(action.ExpiresAt) {
+			delete(b.pendingActions, jid)
+		}
+		return pendingAction{}, false
+	}
+
+	delete(b.pendingActions, jid)
+	return action, true
+}
+
+func (b *MeowBot) executePendingAction(ctx context.Context, jid types.JID, action pendingAction) {
+	if !b.executionAvailable() {
+		b.replyText(jid, "⚠️ Fund-moving actions are currently disabled. No transaction was submitted.")
+		return
+	}
+
+	var txHash string
+	var err error
+
+	switch action.Action {
+	case "send":
+		txHash, err = b.CircleClient.TransferUSDCFromWallet(ctx, action.WalletAddress, action.Recipient, action.Amount)
+	case "swap":
+		txHash, err = b.CircleClient.SwapStablecoinsWithWallet(ctx, action.WalletAddress, action.WalletAddress, action.BuyCurrency, action.Amount)
+	case "bridge":
+		txHash, err = b.CircleClient.BridgeCCTPWithWallet(ctx, action.WalletAddress, action.WalletAddress, action.DestinationChain, action.Amount)
+	case "save":
+		txHash, err = b.CircleClient.DepositSavingsVault(ctx, action.WalletAddress, action.WalletAddress, action.Amount)
+	case "redeem":
+		txHash, err = b.CircleClient.RedeemSavingsVault(ctx, action.WalletAddress, action.DepositID)
+	default:
+		b.replyText(jid, "❌ This confirmation does not describe a supported action.")
+		return
+	}
+
+	if err != nil {
+		log.Printf("[MeowBot] Confirmed %s action failed: %v", action.Action, err)
+		b.replyText(jid, "❌ The confirmed action could not be completed. No further action was submitted.")
+		return
+	}
+
+	b.replyText(jid, fmt.Sprintf("✅ *Rova Action Complete*\n\n• *Action*: %s\n• *Tx Hash*: `%s`\n\nhttps://testnet.arcscan.app/tx/%s", strings.ToUpper(action.Action), txHash, txHash))
+}
+
+func (b *MeowBot) executionAvailable() bool {
+	return b.Config != nil && b.Config.ExecutionEnabled && b.Config.WhatsAppExecutionEnabled
+}
+
+func isFundMovingAction(action string) bool {
+	switch action {
+	case "send", "swap", "bridge", "save", "savings", "withdraw", "redeem":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseDepositID(text string) (int64, bool) {
+	for _, field := range strings.Fields(text) {
+		depositID, err := strconv.ParseInt(field, 10, 64)
+		if err == nil && depositID > 0 {
+			return depositID, true
+		}
+	}
+	return 0, false
+}
+
 func (b *MeowBot) getUserRulesStatus(phone string) string {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseAnonKey == "" {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
 		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
 	}
 
@@ -333,8 +440,8 @@ func (b *MeowBot) getUserRulesStatus(phone string) string {
 	if err != nil {
 		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
 	}
-	req.Header.Set("apikey", b.Config.SupabaseAnonKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseAnonKey)
+	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -470,37 +577,20 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	jidKey := jid.String()
 
-	// Fast-Path Command Interceptor (Instant response without AI API latency)
-	if textLower == "confirm redeem" || textLower == "confirm" || strings.HasPrefix(textLower, "confirm redeem") {
-		b.pendingRedeemMu.Lock()
-		depositID, exists := b.pendingRedemptions[jidKey]
-		if exists {
-			delete(b.pendingRedemptions, jidKey)
-		}
-		b.pendingRedeemMu.Unlock()
-
-		if !exists || depositID <= 0 {
-			depositID = 2 // Fallback to primary active deposit ID if unassigned
-		}
-
-		b.replyText(jid, fmt.Sprintf("⏳ *Executing Smart Contract Vault Redemption for Deposit #%d...*", depositID))
-
-		txHash, err := b.CircleClient.RedeemSavingsVault(ctx, boundWallet, depositID)
-		if err != nil {
-			log.Printf("[MeowBot Error] Redemption failed for %s: %v", jidKey, err)
-			b.replyText(jid, "❌ *Redemption Unavailable*: Your deposit is currently locked in the smart contract vault timelock. Please wait until the timelock expires before redeeming.")
+	if strings.HasPrefix(textLower, "confirm") {
+		confirmationFields := strings.Fields(cleanText)
+		if len(confirmationFields) != 2 {
+			b.replyText(jid, "⚠️ Send `CONFIRM <code>` exactly as shown in the action preview.")
 			return
 		}
 
-		reply := fmt.Sprintf(
-			"🎉 *Savings Vault Redemption Complete!*\n\n"+
-				"• *Deposit ID*: #%d\n"+
-				"• *Status*: Released to Primary Wallet\n"+
-				"• *Tx Hash*: `%s`\n\n"+
-				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
-			depositID, txHash, txHash,
-		)
-		b.replyText(jid, reply)
+		action, confirmed := b.consumePendingAction(jidKey, confirmationFields[1])
+		if !confirmed {
+			b.replyText(jid, "⚠️ That confirmation code is invalid or expired. Start the action again to receive a fresh preview.")
+			return
+		}
+
+		b.executePendingAction(ctx, jid, action)
 		return
 	}
 
@@ -535,6 +625,10 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 	if boundWallet == "" && userRecord != nil {
 		boundWallet = userRecord.CircleWalletAddress
+	}
+	if isFundMovingAction(parsed.Action) && !b.executionAvailable() {
+		b.replyText(jid, "⚠️ Fund-moving actions are currently disabled. Use the authenticated web portal for account information; no transaction can be submitted from WhatsApp.")
+		return
 	}
 
 	switch parsed.Action {
@@ -587,29 +681,24 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 
 		sendAmount := parsed.Amount
-		if sendAmount <= 0 {
-			sendAmount = 50.0
-		}
-
-		b.replyText(jid, fmt.Sprintf("⏳ *Sending %.2f USDC to %s...*", sendAmount, targetRecipient))
-
-		txHash, err := b.CircleClient.TransferUSDCFromWallet(ctx, boundWallet, resolvedWallet, sendAmount)
-		if err != nil {
-			log.Printf("[MeowBot Error] Transfer failed from %s to %s: %v", boundWallet, resolvedWallet, err)
-			b.replyText(jid, "❌ *Transfer Failed*: Unable to complete transfer. Please check your available balance and try again.")
+		if sendAmount <= 0 || sendAmount > b.Config.MaxWhatsAppActionAmount {
+			b.replyText(jid, fmt.Sprintf("⚠️ Specify an amount greater than 0 and no more than %.0f USDC.", b.Config.MaxWhatsAppActionAmount))
 			return
 		}
 
-		reply := fmt.Sprintf(
-			"✅ *USDC Sent Successfully!*\n\n"+
-				"• *Amount*: %.2f USDC\n"+
-				"• *Recipient*: `%s` (%s)\n"+
-				"• *Tx Hash*: `%s`\n"+
-				"• *Settlement Time*: < 1 second\n\n"+
-				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
-			sendAmount, resolvedWallet, targetRecipient, txHash, txHash,
-		)
-		b.replyText(jid, reply)
+		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
+			Action:        "send",
+			WalletAddress: boundWallet,
+			Recipient:     resolvedWallet,
+			Amount:        sendAmount,
+		})
+		if err != nil {
+			log.Printf("[MeowBot] Failed to prepare transfer confirmation: %v", err)
+			b.replyText(jid, "❌ Unable to prepare the transfer confirmation. Please try again.")
+			return
+		}
+
+		b.replyText(jid, fmt.Sprintf("⚠️ *Transfer Confirmation Required*\n\n• *Amount*: %.2f USDC\n• *Recipient*: `%s`\n\nReply `CONFIRM %s` within 5 minutes to submit this transfer.", sendAmount, resolvedWallet, confirmationCode))
 
 	case "swap":
 		if boundWallet == "" {
@@ -618,33 +707,34 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 
 		swapAmount := parsed.Amount
-		if swapAmount <= 0 {
-			swapAmount = 100.0
+		if swapAmount <= 0 || swapAmount > b.Config.MaxWhatsAppActionAmount {
+			b.replyText(jid, fmt.Sprintf("⚠️ Specify an amount greater than 0 and no more than %.0f USDC.", b.Config.MaxWhatsAppActionAmount))
+			return
 		}
 
 		buyCurr := parsed.Currency
 		if buyCurr == "" {
 			buyCurr = "EURC"
 		}
-
-		b.replyText(jid, fmt.Sprintf("⏳ *Executing currency swap (%.2f USDC → %s)...*", swapAmount, buyCurr))
-
-		txHash, err := b.CircleClient.SwapStablecoins(ctx, boundWallet, buyCurr, swapAmount)
-		if err != nil {
-			log.Printf("[MeowBot Error] Swap failed for wallet %s: %v", boundWallet, err)
-			b.replyText(jid, "❌ *Swap Failed*: Unable to execute swap at this time. Please check your available USDC balance and try again.")
+		buyCurr = strings.ToUpper(buyCurr)
+		if buyCurr != "USDC" && buyCurr != "EURC" {
+			b.replyText(jid, "⚠️ Only USDC and EURC swaps are supported.")
 			return
 		}
 
-		reply := fmt.Sprintf(
-			"🔄 *Swap Executed Successfully!*\n\n"+
-				"• *Swapped*: %.2f USDC → %s\n"+
-				"• *Executed Rate*: 0.9420 EURC/USDC\n"+
-				"• *Tx Hash*: `%s`\n\n"+
-				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
-			swapAmount, buyCurr, txHash, txHash,
-		)
-		b.replyText(jid, reply)
+		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
+			Action:        "swap",
+			WalletAddress: boundWallet,
+			BuyCurrency:   buyCurr,
+			Amount:        swapAmount,
+		})
+		if err != nil {
+			log.Printf("[MeowBot] Failed to prepare swap confirmation: %v", err)
+			b.replyText(jid, "❌ Unable to prepare the swap confirmation. Please try again.")
+			return
+		}
+
+		b.replyText(jid, fmt.Sprintf("⚠️ *Swap Confirmation Required*\n\n• *Sell*: %.2f USDC\n• *Buy*: %s\n\nReply `CONFIRM %s` within 5 minutes to submit this swap.", swapAmount, buyCurr, confirmationCode))
 
 	case "bridge":
 		if boundWallet == "" {
@@ -653,35 +743,34 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 
 		bridgeAmount := parsed.Amount
-		if bridgeAmount <= 0 {
-			bridgeAmount = 200.0
-		}
-
-		sourceChain := parsed.SourceChain
-		if sourceChain == "" {
-			sourceChain = "Ethereum"
-		}
-
-		b.replyText(jid, fmt.Sprintf("⏳ *Bridging %.2f USDC from %s to Arc...*", bridgeAmount, sourceChain))
-
-		txHash, err := b.CircleClient.BridgeCCTP(ctx, boundWallet, sourceChain, bridgeAmount)
-		if err != nil {
-			log.Printf("[MeowBot Error] Bridge failed for wallet %s: %v", boundWallet, err)
-			b.replyText(jid, "❌ *Bridge Failed*: Cross-chain bridge request could not be processed right now. Please try again shortly.")
+		if bridgeAmount <= 0 || bridgeAmount > b.Config.MaxWhatsAppActionAmount {
+			b.replyText(jid, fmt.Sprintf("⚠️ Specify an amount greater than 0 and no more than %.0f USDC.", b.Config.MaxWhatsAppActionAmount))
 			return
 		}
 
-		reply := fmt.Sprintf(
-			"🌉 *Cross-Chain Bridge Initiated!*\n\n"+
-				"• *Amount*: %.2f USDC\n"+
-				"• *Source Chain*: %s\n"+
-				"• *Destination*: Arc\n"+
-				"• *Tx Hash*: `%s`\n\n"+
-				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s\n\n"+
-				"_Funds will arrive on Arc in ~30 seconds._",
-			bridgeAmount, sourceChain, txHash, txHash,
-		)
-		b.replyText(jid, reply)
+		destinationChain := parsed.SourceChain
+		if destinationChain == "" {
+			destinationChain = "Ethereum"
+		}
+		destinationChain = strings.ToLower(destinationChain)
+		if destinationChain != "ethereum" && destinationChain != "base" {
+			b.replyText(jid, "⚠️ Only Ethereum Sepolia and Base Sepolia bridge routes are supported.")
+			return
+		}
+
+		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
+			Action:        "bridge",
+			WalletAddress: boundWallet,
+			DestinationChain: destinationChain,
+			Amount:        bridgeAmount,
+		})
+		if err != nil {
+			log.Printf("[MeowBot] Failed to prepare bridge confirmation: %v", err)
+			b.replyText(jid, "❌ Unable to prepare the bridge confirmation. Please try again.")
+			return
+		}
+
+		b.replyText(jid, fmt.Sprintf("⚠️ *Bridge Confirmation Required*\n\n• *Amount*: %.2f USDC\n• *Route*: Arc → %s\n\nReply `CONFIRM %s` within 5 minutes to submit this bridge.", bridgeAmount, destinationChain, confirmationCode))
 
 	case "save", "savings":
 		if boundWallet == "" {
@@ -694,83 +783,49 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			strings.Contains(textLower, "every") || strings.Contains(textLower, "whenever") || strings.Contains(textLower, "standing")
 
 		if isStanding {
-			pct := 10.0
-			if parsed.Amount > 0 && parsed.Amount <= 100 {
-				pct = parsed.Amount
-			}
-
-			intentID := fmt.Sprintf("intent-%d", time.Now().UnixNano())
-			newIntent := &agent.StandingIntent{
-				ID:            intentID,
-				CreatedAt:     time.Now(),
-				Status:        agent.StatusActive,
-				IntentText:    cleanText,
-				Plan:          agent.StandingIntentPlanStep{Action: "save", Percentage: pct},
-				Trigger:       agent.StandingIntentTrigger{Type: "on_receive", MinAmountUsdc: 0.1},
-				CustodyMode:   agent.CustodyManaged,
-				SourceWallet:  boundWallet,
-				NotifyPhone:   phone,
-				SourceChannel: "whatsapp",
-			}
-
-			b.getUserRulesStatus(phone) // Ensure store initialized if needed
-			store := agent.NewSupabaseStore(b.Config.SupabaseURL, b.Config.SupabaseAnonKey)
-			store.AddStandingIntent(newIntent)
-
-			reply := fmt.Sprintf(
-				"💡 *Automatic Savings Armed!*\n\n"+
-					"Every time you receive a deposit, Rova will automatically save %.0f%% into your Savings Vault.\n\n"+
-					"_You can view or update your target savings anytime in this chat!_",
-				pct,
-			)
-			b.replyText(jid, reply)
+			b.replyText(jid, "⚠️ *Automatic savings cannot be armed through WhatsApp.* Create it in the authenticated web portal, where it is subject to scheduler policy limits and audit controls.")
 			return
 		}
 
 		// 2. Otherwise execute immediate one-off savings deposit
 		saveAmount := parsed.Amount
-		if saveAmount <= 0 {
-			saveAmount = 25.0
-		}
-
-		b.replyText(jid, fmt.Sprintf("⏳ *Saving %.2f USDC into your Savings Vault...*", saveAmount))
-
-		savingsTarget := userRecord.SavingsWalletAddress
-		if savingsTarget == "" {
-			savingsTarget = boundWallet
-		}
-
-		txHash, err := b.CircleClient.DepositSavingsVault(ctx, boundWallet, savingsTarget, saveAmount)
-		if err != nil {
-			log.Printf("[MeowBot Error] Vault deposit failed for wallet %s: %v", boundWallet, err)
-			b.replyText(jid, "❌ *Savings Deposit Failed*: Unable to deposit into the savings vault. Please check your wallet balance and try again.")
+		if saveAmount <= 0 || saveAmount > b.Config.MaxWhatsAppActionAmount {
+			b.replyText(jid, fmt.Sprintf("⚠️ Specify an amount greater than 0 and no more than %.0f USDC.", b.Config.MaxWhatsAppActionAmount))
 			return
 		}
 
-		reply := fmt.Sprintf(
-			"🔒 *Savings Vault Deposit Complete!*\n\n"+
-				"• *Amount Saved*: %.2f USDC\n"+
-				"• *Lock Period*: 30 Days (Protected from routine spending)\n"+
-				"• *Tx Hash*: `%s`\n\n"+
-				"🔗 *ArcScan Explorer*:\nhttps://testnet.arcscan.app/tx/%s",
-			saveAmount, txHash, txHash,
-		)
-		b.replyText(jid, reply)
+		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
+			Action:        "save",
+			WalletAddress: boundWallet,
+			Amount:        saveAmount,
+		})
+		if err != nil {
+			log.Printf("[MeowBot] Failed to prepare savings confirmation: %v", err)
+			b.replyText(jid, "❌ Unable to prepare the savings confirmation. Please try again.")
+			return
+		}
+
+		b.replyText(jid, fmt.Sprintf("⚠️ *Savings Deposit Confirmation Required*\n\n• *Amount*: %.2f USDC\n• *Timelock*: 30 days\n\nReply `CONFIRM %s` within 5 minutes to submit this vault deposit.", saveAmount, confirmationCode))
 
 	case "withdraw", "redeem":
-		b.pendingRedeemMu.Lock()
-		b.pendingRedemptions[jidKey] = 2 // Default depositId target
-		b.pendingRedeemMu.Unlock()
+		depositID, found := parseDepositID(cleanText)
+		if !found {
+			b.replyText(jid, "⚠️ Specify the exact deposit ID to redeem, for example: `redeem 3`.")
+			return
+		}
 
-		reply :=
-			"🔒 *Savings Vault Redemption Request*\n\n" +
-				"• *Contract*: RovaSavingsVault (`0x933...9BfB`)\n" +
-				"• *Target Deposit*: Deposit #2\n" +
-				"• *Status*: Timelock status verified\n\n" +
-				"⚠️ *Strict Authorization Required*\n" +
-				"Reply *CONFIRM REDEEM* to release your unlocked savings back to your primary wallet."
+		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
+			Action:        "redeem",
+			WalletAddress: boundWallet,
+			DepositID:     depositID,
+		})
+		if err != nil {
+			log.Printf("[MeowBot] Failed to prepare redemption confirmation: %v", err)
+			b.replyText(jid, "❌ Unable to prepare the redemption confirmation. Please try again.")
+			return
+		}
 
-		b.replyText(jid, reply)
+		b.replyText(jid, fmt.Sprintf("⚠️ *Savings Redemption Confirmation Required*\n\n• *Deposit ID*: #%d\n• *Destination*: your managed wallet\n\nReply `CONFIRM %s` within 5 minutes to request redemption. The contract will reject still-locked deposits.", depositID, confirmationCode))
 
 	default:
 		reply :=
@@ -842,6 +897,10 @@ func (b *MeowBot) replyText(jid types.JID, text string) {
 }
 
 func RunMeowBotService(cfg *config.Config) error {
+	if err := cfg.ValidateDatabaseAccess(); err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -860,7 +919,7 @@ func RunMeowBotService(cfg *config.Config) error {
 		log.Printf("[MeowBot] Warning: Failed to init ChainClient for Watcher: %v", err)
 	}
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseAnonKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
 	shopper := nanopay.NewShopper()
 	interval := time.Duration(cfg.BalancePollInterval) * time.Second
 	if interval <= 0 {

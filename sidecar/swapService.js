@@ -69,6 +69,9 @@ async function getSwapQuote({ sellCurrency, buyCurrency, amount, walletAddress }
 }
 
 async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, maxSlippageBps = 50 }) {
+	if (String(process.env.ROVA_EXECUTION_ENABLED).toLowerCase() !== 'true') {
+		throw new Error('Swap execution is disabled until ROVA_EXECUTION_ENABLED=true is explicitly approved');
+	}
   if (sellCurrency === buyCurrency) {
     throw new Error("sellCurrency and buyCurrency must differ");
   }
@@ -78,6 +81,13 @@ async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, m
   if (!walletAddress) {
     throw new Error("walletAddress is required for swap execution");
   }
+  if (!['USDC', 'EURC'].includes(sellCurrency) || !['USDC', 'EURC'].includes(buyCurrency)) {
+    throw new Error('Only USDC and EURC swaps are supported');
+  }
+	const maximumAmount = Number(process.env.ROVA_MAX_AUTONOMOUS_AMOUNT_USDC || 100);
+	if (!Number.isFinite(amount) || amount > maximumAmount) {
+		throw new Error(`amount must be no more than ${maximumAmount}`);
+	}
 
   const quote = await getSwapQuote({ sellCurrency, buyCurrency, amount, walletAddress });
   const slippageBps = maxSlippageBps || 50;

@@ -82,6 +82,9 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 }
 
 func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, value *big.Int, data []byte) (string, error) {
+	if c.Config == nil || !c.Config.ExecutionEnabled {
+		return "", fmt.Errorf("transaction execution is disabled; set ROVA_EXECUTION_ENABLED=true only after operational approval")
+	}
 	if c.RPCClient == nil || c.PrivateKey == nil {
 		return "", fmt.Errorf("RPC client and private key are required to sign and send transactions")
 	}

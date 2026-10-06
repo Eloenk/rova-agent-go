@@ -175,6 +175,10 @@ func (c *CircleClient) TransferUSDC(ctx context.Context, recipient string, amoun
 }
 
 func (c *CircleClient) TransferUSDCFromWallet(ctx context.Context, walletID string, recipient string, amount float64) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+
 	targetWalletID := walletID
 	if targetWalletID == "" {
 		targetWalletID = c.Config.CircleWalletID
@@ -271,6 +275,13 @@ type SwapSidecarResponse struct {
 }
 
 func (c *CircleClient) SwapViaUDSSidecar(ctx context.Context, walletAddress, sellCurrency, buyCurrency string, amount float64) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+	if len(c.Config.SwapSidecarToken) < 32 {
+		return "", fmt.Errorf("ROVA_SIDECAR_TOKEN must be configured with at least 32 characters")
+	}
+
 	socketPath := c.Config.SwapSidecarSocket
 	if socketPath == "" {
 		socketPath = "/tmp/rova-swap.sock"
@@ -315,6 +326,7 @@ func (c *CircleClient) SwapViaUDSSidecar(ctx context.Context, walletAddress, sel
 		return "", fmt.Errorf("failed to build sidecar HTTP request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Config.SwapSidecarToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -360,6 +372,10 @@ func (c *CircleClient) BridgeCCTP(ctx context.Context, walletAddress string, toC
 }
 
 func (c *CircleClient) BridgeCCTPWithWallet(ctx context.Context, walletID string, walletAddress string, toChain string, amount float64) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+
 	if c.Config.CircleAPIKey == "" {
 		return "", fmt.Errorf("Circle API key is required for live bridge execution")
 	}
@@ -377,6 +393,10 @@ func (c *CircleClient) BridgeCCTPWithWallet(ctx context.Context, walletID string
 }
 
 func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet string, savingsSubWallet string, amount float64) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+
 	if c.Config.CircleAPIKey == "" {
 		return "", fmt.Errorf("Circle API key is required for savings vault deposit")
 	}
@@ -413,6 +433,10 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 }
 
 func (c *CircleClient) RedeemSavingsVault(ctx context.Context, userWallet string, depositID int64) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+
 	if c.Config.CircleAPIKey == "" {
 		return "", fmt.Errorf("Circle API key is required for savings vault redemption")
 	}
@@ -437,6 +461,10 @@ func (c *CircleClient) ExecuteContract(ctx context.Context, contractAddress stri
 }
 
 func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID string, contractAddress string, functionSig string, params []interface{}) (string, error) {
+	if err := c.requireExecutionEnabled(); err != nil {
+		return "", err
+	}
+
 	targetWalletID := walletID
 	if targetWalletID == "" {
 		targetWalletID = c.Config.CircleWalletID
@@ -470,6 +498,13 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 	}
 
 	return c.postTransaction(ctx, url, payload)
+}
+
+func (c *CircleClient) requireExecutionEnabled() error {
+	if c.Config == nil || !c.Config.ExecutionEnabled {
+		return fmt.Errorf("custodial execution is disabled; set ROVA_EXECUTION_ENABLED=true only after operational approval")
+	}
+	return nil
 }
 
 func (c *CircleClient) postTransaction(ctx context.Context, url string, payload interface{}) (string, error) {

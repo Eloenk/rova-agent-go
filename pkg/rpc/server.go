@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/chain"
@@ -94,50 +93,8 @@ func (s *RPCServer) handleMethod(ctx context.Context, method string, params json
 	case "rova_listRules":
 		return s.Store.ListActiveRules(), nil
 
-	case "rova_createRule":
-		var newRule agent.AgentRule
-		if err := json.Unmarshal(params, &newRule); err != nil {
-			return nil, fmt.Errorf("invalid rule params: %w", err)
-		}
-		newRule.ID = fmt.Sprintf("rule-%d", time.Now().UnixNano())
-		newRule.CreatedAt = time.Now()
-		newRule.Status = agent.StatusActive
-		s.Store.AddRule(&newRule)
-		return newRule, nil
-
 	case "rova_listExecutions":
 		return s.Store.ListExecutions(), nil
-
-	case "rova_executeTransfer":
-		var p struct {
-			Recipient string  `json:"recipient"`
-			Amount    float64 `json:"amount"`
-		}
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("invalid transfer params: %w", err)
-		}
-		txHash, err := s.ChainClient.TransferUSDC(ctx, p.Recipient, p.Amount)
-		if err != nil {
-			return nil, fmt.Errorf("transfer failed: %w", err)
-		}
-		return map[string]interface{}{
-			"txHash":     txHash,
-			"arcScanUrl": fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash),
-		}, nil
-
-	case "rova_logExecution":
-		var opts chain.LogExecutionOpts
-		if err := json.Unmarshal(params, &opts); err != nil {
-			return nil, fmt.Errorf("invalid log execution params: %w", err)
-		}
-		txHash, err := s.ChainClient.LogExecutionOnchain(ctx, opts)
-		if err != nil {
-			return nil, fmt.Errorf("log execution failed: %w", err)
-		}
-		return map[string]interface{}{
-			"txHash":     txHash,
-			"arcScanUrl": fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash),
-		}, nil
 
 	default:
 		return nil, fmt.Errorf("method not found: %s", method)

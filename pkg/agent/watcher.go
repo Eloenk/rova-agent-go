@@ -102,6 +102,11 @@ func (w *WatcherEngine) handleWSSTransferEvent(ctx context.Context, toAddress st
 	intents := w.Store.ListActiveStandingIntents()
 	for _, intent := range intents {
 		if strings.EqualFold(intent.SourceWallet, toAddress) {
+			if intent.CustodyMode != CustodyManaged || !w.canExecuteAutomatically(0) {
+				log.Printf("[WSS Event Trigger] Standing Intent %s matched but automatic execution is disabled or not managed custody", intent.ID)
+				continue
+			}
+
 			var saveAmount float64
 			if intent.Plan.Percentage > 0 {
 				saveAmount = amount * (intent.Plan.Percentage / 100.0)
@@ -112,6 +117,10 @@ func (w *WatcherEngine) handleWSSTransferEvent(ctx context.Context, toAddress st
 			}
 
 			if saveAmount <= 0 {
+				continue
+			}
+			if !w.canExecuteAutomatically(saveAmount) {
+				log.Printf("[WSS Event Trigger] Standing Intent %s exceeded automatic-execution policy", intent.ID)
 				continue
 			}
 
@@ -173,6 +182,9 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 		if intent.SourceWallet == "" {
 			continue
 		}
+		if intent.CustodyMode != CustodyManaged || !w.canExecuteAutomatically(0) {
+			continue
+		}
 
 		balance, err := w.ChainClient.GetBalanceUSDCWithFailover(ctx, intent.SourceWallet)
 		if err != nil {
@@ -203,6 +215,10 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 			}
 
 			if saveAmount <= 0 {
+				continue
+			}
+			if !w.canExecuteAutomatically(saveAmount) {
+				log.Printf("[Watcher] Standing Intent %s exceeded automatic-execution policy", intent.ID)
 				continue
 			}
 
@@ -285,6 +301,11 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 		}
 		return
 	}
+	if !w.canExecuteAutomatically(rule.Amount) {
+		w.Store.UpdateRuleStatus(rule.ID, StatusReadyToExecute)
+		log.Printf("[Watcher] Rule %s matched but automatic-execution policy did not permit it", rule.ID)
+		return
+	}
 
 	txHash, err := w.ChainClient.TransferUSDC(ctx, rule.RecipientIdentifier, rule.Amount)
 	if err != nil {
@@ -334,4 +355,14 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 			Memo:             memo,
 		})
 	}
+}
+
+func (w *WatcherEngine) canExecuteAutomatically(amount float64) bool {
+	if w.ChainClient == nil || w.ChainClient.Config == nil || !w.ChainClient.Config.ExecutionEnabled {
+		return false
+	}
+	if amount == 0 {
+		return true
+	}
+	return amount > 0 && amount <= w.ChainClient.Config.MaxAutonomousAmount
 }
