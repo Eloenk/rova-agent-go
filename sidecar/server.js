@@ -1,21 +1,32 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs');
-const path = require('path');
 const { executeSwap, getSwapQuote } = require('./swapService');
 
 const app = express();
 app.use(express.json());
 
 const SOCKET_PATH = process.env.ROVA_SWAP_SOCKET || '/tmp/rova-swap.sock';
-const isWindows = process.platform === 'win32';
-// On Linux/macOS, ignore generic PORT=8080 from environment and use UDS unless SWAP_SIDECAR_PORT is explicitly set
-const explicitTcpPort = process.env.SWAP_SIDECAR_PORT || (isWindows ? (process.env.PORT || 3001) : null);
+const explicitTcpPort = process.env.SWAP_SIDECAR_PORT || null;
+const sidecarToken = process.env.ROVA_SIDECAR_TOKEN || '';
+
+function requireSidecarToken(req, res, next) {
+  const provided = req.get('authorization') || '';
+  const expected = `Bearer ${sidecarToken}`;
+  if (sidecarToken.length < 32 || provided.length !== expected.length) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  if (!crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  return next();
+}
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, status: 'online', mode: explicitTcpPort ? 'tcp' : 'uds', socket: SOCKET_PATH });
 });
 
-app.post('/api/swap/quote', async (req, res) => {
+app.post('/api/swap/quote', requireSidecarToken, async (req, res) => {
   try {
     const { sellCurrency, buyCurrency, amount, walletAddress } = req.body;
     const quote = await getSwapQuote({ sellCurrency, buyCurrency, amount: Number(amount), walletAddress });
@@ -26,11 +37,14 @@ app.post('/api/swap/quote', async (req, res) => {
   }
 });
 
-app.post('/api/swap', async (req, res) => {
+app.post('/api/swap', requireSidecarToken, async (req, res) => {
   try {
     const { walletAddress, sellCurrency, buyCurrency, amount } = req.body;
     if (!walletAddress || !sellCurrency || !buyCurrency || !amount) {
       return res.status(400).json({ ok: false, error: 'Missing required parameters (walletAddress, sellCurrency, buyCurrency, amount)' });
+    }
+    if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress) || !['USDC', 'EURC'].includes(sellCurrency) || !['USDC', 'EURC'].includes(buyCurrency)) {
+      return res.status(400).json({ ok: false, error: 'Invalid wallet or currency' });
     }
 
     const result = await executeSwap({
@@ -48,8 +62,8 @@ app.post('/api/swap', async (req, res) => {
 });
 
 if (explicitTcpPort) {
-  app.listen(explicitTcpPort, () => {
-    console.log(`[SwapSidecar] HTTP Server listening on TCP port ${explicitTcpPort}`);
+  app.listen(explicitTcpPort, '127.0.0.1', () => {
+    console.log(`[SwapSidecar] HTTP Server listening on 127.0.0.1:${explicitTcpPort}`);
   });
 } else {
   if (fs.existsSync(SOCKET_PATH)) {

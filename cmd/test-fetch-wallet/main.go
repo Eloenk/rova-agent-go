@@ -172,7 +172,7 @@ func main() {
 	var circleWallet string
 	var foundUser *UserRecord
 
-	if cfg.SupabaseURL != "" && cfg.SupabaseAnonKey != "" {
+	if cfg.SupabaseURL != "" && cfg.SupabaseServiceRoleKey != "" {
 		fmt.Printf("🔍 1. Querying Supabase Database (%s)...\n", cfg.SupabaseURL)
 		
 		queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address", cfg.SupabaseURL)
@@ -183,8 +183,8 @@ func main() {
 		}
 
 		headers := map[string]string{
-			"apikey":        cfg.SupabaseAnonKey,
-			"Authorization": "Bearer " + cfg.SupabaseAnonKey,
+			"apikey":        cfg.SupabaseServiceRoleKey,
+			"Authorization": "Bearer " + cfg.SupabaseServiceRoleKey,
 		}
 
 		bodyBytes, statusCode, err := fetchHTTP(queryURL, headers, nil)

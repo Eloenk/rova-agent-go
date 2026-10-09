@@ -50,14 +50,14 @@ func main() {
 	loadEnvFile("../rova/.env")
 
 	cfg := config.LoadConfig()
-	if cfg.SupabaseURL == "" || cfg.SupabaseAnonKey == "" {
-		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_ANON_KEY is missing!")
+	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRoleKey == "" {
+		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing!")
 	}
 
 	fmt.Printf("✔ Loaded Supabase URL: %s\n", cfg.SupabaseURL)
-	fmt.Printf("✔ Loaded Supabase Anon Key (Length: %d, Prefix: %s...)\n\n", len(cfg.SupabaseAnonKey), cfg.SupabaseAnonKey[:12])
+	fmt.Println("✔ Loaded Supabase service credentials\n")
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseAnonKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

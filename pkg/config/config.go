@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
@@ -49,10 +51,17 @@ type YAMLConfig struct {
 
 type Config struct {
 	ExecutionMode               string
+	ExecutionEnabled            bool
+	AutonomousExecutionEnabled  bool
+	WhatsAppExecutionEnabled    bool
+	MaxAutonomousAmount         float64
+	MaxWhatsAppActionAmount     float64
 	AllowRegexFallback          bool
 	AIProvider                  string
 	AIModel                     string
 	Port                        string
+	BindAddress                 string
+	EngineAPIToken              string
 	GoogleGenerativeAIAPIKey    string
 	AnthropicAPIKey             string
 	ArcRPCURL                   string
@@ -71,11 +80,12 @@ type Config struct {
 	WhatsAppAPIToken            string
 	WhatsAppPhoneNumberID       string
 	SupabaseURL                 string
-	SupabaseAnonKey             string
+	SupabaseServiceRoleKey      string
 	AppURL                      string
 	VaultStrategy               string
 	SwapStrategy                string
 	SwapSidecarSocket           string
+	SwapSidecarToken            string
 	SwapRouterAddress           string
 }
 
@@ -120,10 +130,17 @@ func LoadConfig() *Config {
 
 	return &Config{
 		ExecutionMode:               mode,
+		ExecutionEnabled:            getBoolEnv("ROVA_EXECUTION_ENABLED", false),
+		AutonomousExecutionEnabled:  getBoolEnv("ROVA_AUTONOMOUS_EXECUTION_ENABLED", false),
+		WhatsAppExecutionEnabled:    getBoolEnv("ROVA_WHATSAPP_EXECUTION_ENABLED", false),
+		MaxAutonomousAmount:         getPositiveFloatEnv("ROVA_MAX_AUTONOMOUS_AMOUNT_USDC", 100),
+		MaxWhatsAppActionAmount:     getPositiveFloatEnv("ROVA_MAX_WHATSAPP_AMOUNT_USDC", 100),
 		AllowRegexFallback:          y.AI.AllowRegexFallback,
 		AIProvider:                  fallback(y.AI.Provider, "auto"),
 		AIModel:                     y.AI.Model,
 		Port:                        getEnv("PORT", fallback(y.Server.Port, "8080")),
+		BindAddress:                 getEnv("ROVA_ENGINE_BIND", "127.0.0.1"),
+		EngineAPIToken:              os.Getenv("ROVA_ENGINE_API_TOKEN"),
 		GoogleGenerativeAIAPIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		ArcRPCURL:                   rpcURLs[0],
@@ -142,13 +159,28 @@ func LoadConfig() *Config {
 		WhatsAppAPIToken:            os.Getenv("WHATSAPP_API_TOKEN"),
 		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
-		SupabaseAnonKey:             getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", os.Getenv("SUPABASE_ANON_KEY")),
+		SupabaseServiceRoleKey:      os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
 		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
 		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "smart_contract")),
 		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "sidecar_uds")),
 		SwapSidecarSocket:           getEnv("ROVA_SWAP_SOCKET", fallback(y.Swap.SidecarSocket, "/tmp/rova-swap.sock")),
+		SwapSidecarToken:            os.Getenv("ROVA_SIDECAR_TOKEN"),
 		SwapRouterAddress:           getEnv("NEXT_PUBLIC_ROVA_SWAP_ROUTER_ADDRESS", fallback(y.Swap.RouterAddress, "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA")),
 	}
+}
+
+func (c *Config) ValidateEngineServer() error {
+	if len(c.EngineAPIToken) < 32 {
+		return fmt.Errorf("ROVA_ENGINE_API_TOKEN must be configured with at least 32 characters")
+	}
+	return c.ValidateDatabaseAccess()
+}
+
+func (c *Config) ValidateDatabaseAccess() error {
+	if c.SupabaseURL == "" || c.SupabaseServiceRoleKey == "" {
+		return fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for the engine")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {
@@ -170,4 +202,30 @@ func fallbackInt(val, def int64) int64 {
 		return val
 	}
 	return def
+}
+
+func getBoolEnv(key string, fallback bool) bool {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getPositiveFloatEnv(key string, fallback float64) float64 {
+	value, ok := os.LookupEnv(key)
+	if !ok || value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

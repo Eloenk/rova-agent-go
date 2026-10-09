@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -17,18 +16,22 @@ import (
 	"rova-agent-go/pkg/config"
 	"rova-agent-go/pkg/nanopay"
 	"rova-agent-go/pkg/rpc"
+	"rova-agent-go/pkg/security"
 	"rova-agent-go/pkg/whatsapp"
 )
 
 func main() {
 	cfg := config.LoadConfig()
+	if err := cfg.ValidateEngineServer(); err != nil {
+		log.Fatalf("Engine configuration rejected: %v", err)
+	}
 
 	chainClient, err := chain.NewChainClient(cfg)
 	if err != nil {
 		log.Fatalf("Fatal error initializing ethclient: %v", err)
 	}
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseAnonKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
 	shopper := nanopay.NewShopper()
 	notifier := whatsapp.NewNotifier(cfg)
 
@@ -39,49 +42,41 @@ func main() {
 	watcher.StartWatcher(ctx)
 
 	rpcServer := rpc.NewRPCServer(cfg, store, chainClient)
-	http.Handle("/rpc", rpcServer)
+	mux := http.NewServeMux()
+	mux.Handle("/rpc", security.RequireBearer(cfg.EngineAPIToken, rpcServer))
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":        "healthy",
-			"engine":        "rova-agent-go",
-			"executionMode": cfg.ExecutionMode,
-			"arcChain":      cfg.ChainID,
-			"wallet":        chainClient.Address.Hex(),
-			"activeRules":   len(store.ListActiveRules()),
+			"status": "healthy",
+			"engine": "rova-agent-go",
+			"arcChain": cfg.ChainID,
 		})
 	})
 
-	http.HandleFunc("/api/agent/rules", func(w http.ResponseWriter, r *http.Request) {
+	rulesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
 			json.NewEncoder(w).Encode(store.ListActiveRules())
 			return
 		}
-		if r.Method == "POST" {
-			var newRule agent.AgentRule
-			if err := json.NewDecoder(r.Body).Decode(&newRule); err != nil {
-				http.Error(w, "Invalid JSON", http.StatusBadRequest)
-				return
-			}
-			newRule.ID = fmt.Sprintf("rule-%d", time.Now().UnixNano())
-			newRule.CreatedAt = time.Now()
-			newRule.Status = agent.StatusActive
-			store.AddRule(&newRule)
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(newRule)
-			return
-		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	})
+	mux.Handle("/api/agent/rules", security.RequireBearer(cfg.EngineAPIToken, rulesHandler))
 
-	http.HandleFunc("/api/agent/executions", func(w http.ResponseWriter, r *http.Request) {
+	executionsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(store.ListExecutions())
 	})
+	mux.Handle("/api/agent/executions", security.RequireBearer(cfg.EngineAPIToken, executionsHandler))
 
-	serverAddr := ":" + cfg.Port
-	server := &http.Server{Addr: serverAddr}
+	serverAddr := cfg.BindAddress + ":" + cfg.Port
+	server := &http.Server{
+		Addr:              serverAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
