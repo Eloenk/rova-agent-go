@@ -1,5 +1,9 @@
 # Rova AI & Engine Configuration
 
+execution:
+  # Circle custody is the fail-safe default. Direct signing must be selected explicitly.
+  mode: "circle"
+
 ai:
   # Provider options:
   #   "gemini"    - Primary Google Generative AI (Requires GOOGLE_GENERATIVE_AI_API_KEY)
@@ -25,7 +29,8 @@ ai:
   max_tokens: 8192
 
 database:
-  # Set enabled to true if SUPABASE_URL & SUPABASE_ANON_KEY are configured in .env.local
+  # REST uses the server-only secret key. Realtime requires a separate publishable
+  # key plus narrowly scoped RLS policies; otherwise the engine uses REST polling.
   supabase_enabled: true
 
 app:
@@ -33,6 +38,7 @@ app:
 
 vault:
   strategy: "smart_contract" # On-chain Timelocked Storage Vault contract (RovaSavingsVault.sol)
+  address: "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
 
 balance:
   # Balance monitoring mode:
@@ -56,7 +62,7 @@ arc:
 
 swap:
   # Swap strategy options:
-  #   "sidecar_uds"    - High-performance Unix Domain Socket Node.js Sidecar (Circle AppKit)
+  #   "sidecar_uds"    - Authenticated Unix Domain Socket Node.js sidecar (Circle SwapKit)
   #   "smart_contract" - Uniswap-style Swap Router smart contract (RovaSwapRouter.sol)
   strategy: "sidecar_uds"
   sidecar_socket: "/tmp/rova-swap.sock"

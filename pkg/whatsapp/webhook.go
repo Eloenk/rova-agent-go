@@ -38,7 +38,7 @@ func (n *Notifier) SendMessage(toPhone, text string) error {
 	if n.MeowBot != nil {
 		return n.MeowBot.SendMessageToPhone(toPhone, text)
 	}
-	log.Printf("[Whatsmeow Outbound Log] to=%s:\n%s", toPhone, text)
+	log.Printf("[Whatsmeow] Outbound message suppressed because no bot transport is attached")
 	return nil
 }
 
@@ -51,7 +51,7 @@ func (n *Notifier) SendExecutionReport(toPhone string, opts agent.NotificationOp
 	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
 	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
 	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
-	text.WriteString(fmt.Sprintf("🏷️ *Goroutine Nanopayments*: Selected *%s* out of %d quotes via x402.\n", opts.BestProvider, opts.ProvidersChecked))
+	text.WriteString(fmt.Sprintf("🏷️ *Quote Comparison*: Selected *%s* out of %d provider simulations.\n", opts.BestProvider, opts.ProvidersChecked))
 
 	if opts.Memo != "" {
 		text.WriteString(fmt.Sprintf("📝 *Memo*: %s\n", opts.Memo))
@@ -81,4 +81,3 @@ func (n *Notifier) SendApprovalAlert(toPhone, ruleID, recipient string, amount, 
 
 	return n.SendMessage(toPhone, text.String())
 }
-

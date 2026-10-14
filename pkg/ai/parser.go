@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,7 +16,7 @@ import (
 )
 
 type ParsedIntent struct {
-	Action      string  `json:"action"`      // "send", "swap", "bridge", "rule", "balance", "status", "help"
+	Action      string  `json:"action"` // "send", "swap", "bridge", "rule", "balance", "status", "help"
 	Amount      float64 `json:"amount"`
 	Currency    string  `json:"currency"`    // "USDC", "EURC", "USYC"
 	Recipient   string  `json:"recipient"`   // "0x..." or label
@@ -28,12 +27,13 @@ type ParsedIntent struct {
 }
 
 type AIParser struct {
-	GeminiAPIKey string
-	AnthropicKey string
-	NvidiaKey    string
-	Provider     string
-	ModelName    string
-	HTTPClient   *http.Client
+	GeminiAPIKey  string
+	AnthropicKey  string
+	NvidiaKey     string
+	NvidiaBaseURL string
+	Provider      string
+	ModelName     string
+	HTTPClient    *http.Client
 }
 
 func NewAIParser() *AIParser {
@@ -43,19 +43,17 @@ func NewAIParser() *AIParser {
 
 func NewAIParserWithConfig(cfg *config.Config) *AIParser {
 	model := cfg.AIModel
-	if model == "" {
-		model = os.Getenv("ROVA_AI_MODEL")
-	}
 	provider := strings.ToLower(cfg.AIProvider)
 	if provider == "" {
 		provider = "auto"
 	}
 	return &AIParser{
-		GeminiAPIKey: cfg.GoogleGenerativeAIAPIKey,
-		AnthropicKey: cfg.AnthropicAPIKey,
-		NvidiaKey:    os.Getenv("NVIDIA_API_KEY"),
-		Provider:     provider,
-		ModelName:    model,
+		GeminiAPIKey:  cfg.GoogleGenerativeAIAPIKey,
+		AnthropicKey:  cfg.AnthropicAPIKey,
+		NvidiaKey:     cfg.NvidiaAPIKey,
+		NvidiaBaseURL: cfg.NvidiaBaseURL,
+		Provider:      provider,
+		ModelName:     model,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -200,9 +198,6 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 		return nil, err
 	}
 	key := strings.Trim(strings.TrimSpace(p.GeminiAPIKey), "\r\n\"'")
-	if key == "" {
-		key = strings.Trim(strings.TrimSpace(os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")), "\r\n\"'")
-	}
 	req.Header.Set("X-goog-api-key", key)
 
 	resp, err := p.HTTPClient.Do(req)
@@ -211,9 +206,12 @@ func (p *AIParser) callGemini(ctx context.Context, input string) (*ParsedIntent,
 	}
 	defer resp.Body.Close()
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read gemini response: %w", err)
+	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("gemini API error (%d for %s): %s", resp.StatusCode, modelName, string(respBytes))
+		return nil, fmt.Errorf("gemini API error (%d for %s)", resp.StatusCode, modelName)
 	}
 
 	var geminiRes struct {
@@ -265,9 +263,6 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	}
 
 	key := strings.Trim(strings.TrimSpace(p.AnthropicKey), "\r\n\"'")
-	if key == "" {
-		key = strings.Trim(strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")), "\r\n\"'")
-	}
 
 	req.Header.Set("x-api-key", key)
 	req.Header.Set("anthropic-version", "2023-06-01")
@@ -280,11 +275,13 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic API error (%d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("anthropic API error (%d)", resp.StatusCode)
 	}
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read anthropic response: %w", err)
+	}
 	var anthropicRes struct {
 		Content []struct {
 			Text string `json:"text"`
@@ -303,10 +300,7 @@ func (p *AIParser) callAnthropic(ctx context.Context, input string) (*ParsedInte
 }
 
 func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent, error) {
-	url := os.Getenv("NVIDIA_BASE_URL")
-	if url == "" {
-		url = "https://integrate.api.nvidia.com/v1/chat/completions"
-	}
+	url := p.NvidiaBaseURL
 
 	modelToUse := p.ModelName
 	if modelToUse == "" || !strings.Contains(modelToUse, "/") {
@@ -339,9 +333,6 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RovaAgent/1.0")
 	key := strings.TrimSpace(p.NvidiaKey)
-	if key == "" {
-		key = strings.TrimSpace(os.Getenv("NVIDIA_API_KEY"))
-	}
 	key = strings.Trim(key, "\r\n\"'")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -354,11 +345,10 @@ func (p *AIParser) callNvidia(ctx context.Context, input string) (*ParsedIntent,
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("NVIDIA API error (%d)", resp.StatusCode)
 	}
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -591,9 +581,12 @@ func (p *AIParser) generateTextGemini(ctx context.Context, prompt string) (strin
 	}
 	defer resp.Body.Close()
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("failed to read gemini response: %w", err)
+	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("gemini API error (%d): %s", resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("gemini API error (%d)", resp.StatusCode)
 	}
 
 	var geminiRes struct {
@@ -646,7 +639,10 @@ func (p *AIParser) generateTextAnthropic(ctx context.Context, prompt string) (st
 		return "", fmt.Errorf("anthropic API error (%d)", resp.StatusCode)
 	}
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("failed to read anthropic response: %w", err)
+	}
 	var anthropicRes struct {
 		Content []struct {
 			Text string `json:"text"`
@@ -661,10 +657,7 @@ func (p *AIParser) generateTextAnthropic(ctx context.Context, prompt string) (st
 }
 
 func (p *AIParser) generateTextNvidia(ctx context.Context, prompt string) (string, error) {
-	url := os.Getenv("NVIDIA_BASE_URL")
-	if url == "" {
-		url = "https://integrate.api.nvidia.com/v1/chat/completions"
-	}
+	url := p.NvidiaBaseURL
 
 	modelToUse := p.ModelName
 	if modelToUse == "" {
@@ -705,11 +698,13 @@ func (p *AIParser) generateTextNvidia(ctx context.Context, prompt string) (strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("NVIDIA API error (%d): %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("NVIDIA API error (%d)", resp.StatusCode)
 	}
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("failed to read NVIDIA response: %w", err)
+	}
 	var nvidiaRes struct {
 		Choices []struct {
 			Message struct {
@@ -724,4 +719,3 @@ func (p *AIParser) generateTextNvidia(ctx context.Context, prompt string) (strin
 
 	return nvidiaRes.Choices[0].Message.Content, nil
 }
-

@@ -124,12 +124,12 @@ func (w *WatcherEngine) handleWSSTransferEvent(ctx context.Context, toAddress st
 				continue
 			}
 
-			log.Printf("[WSS Event Trigger] Standing Intent %s matched! Transfer: %.2f USDC to %s, Vault Save: %.2f USDC", intent.ID, amount, toAddress, saveAmount)
+			log.Printf("[WSS Event Trigger] Standing intent %s matched an approved savings policy", intent.ID)
 
 			var txHash string
 			var err error
 			if w.ChainClient.CircleClient != nil {
-				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, intent.SourceWallet, saveAmount)
+				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, saveAmount)
 			} else {
 				txHash, err = w.ChainClient.TransferUSDC(ctx, intent.SourceWallet, saveAmount)
 			}
@@ -222,11 +222,11 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 				continue
 			}
 
-			log.Printf("[Watcher] Standing Intent %s fired! Incoming Delta: %.2f USDC, Savings: %.2f USDC", intent.ID, delta, saveAmount)
+			log.Printf("[Watcher] Standing intent %s fired an approved savings policy", intent.ID)
 
 			var txHash string
 			if w.ChainClient.CircleClient != nil {
-				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, intent.SourceWallet, saveAmount)
+				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, saveAmount)
 			} else {
 				txHash, err = w.ChainClient.TransferUSDC(ctx, intent.SourceWallet, saveAmount)
 			}
@@ -278,6 +278,10 @@ func (w *WatcherEngine) evaluateRules(ctx context.Context) {
 
 	for _, rule := range activeRules {
 		shopResult := w.Shopper.ShopRates(rule.Pair)
+		if !shopResult.Executable {
+			log.Printf("[Watcher] Rule %s skipped because only simulated quotes are available", rule.ID)
+			continue
+		}
 		bestRate := shopResult.BestRate
 
 		matched := false
@@ -316,7 +320,7 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 	memo := fmt.Sprintf("auto-exec: rate %.4f >= target %.4f · shopped %d quotes (%s @ %.4f)",
 		shopResult.BestRate, rule.TriggerValue, shopResult.ProvidersChecked, shopResult.BestProvider, shopResult.BestRate)
 
-	onchainTxHash, err := w.ChainClient.LogExecutionOnchain(ctx, chain.LogExecutionOpts{
+	_, err = w.ChainClient.LogExecutionOnchain(ctx, chain.LogExecutionOpts{
 		RuleID:          rule.ID,
 		Recipient:       rule.RecipientIdentifier,
 		AmountUsdc:      rule.Amount,
@@ -340,7 +344,7 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 		Memo:            memo,
 	})
 
-	log.Printf("[Watcher] Rule %s FIRED: %s, OnchainLog: %s", rule.ID, txHash, onchainTxHash)
+	log.Printf("[Watcher] Rule %s executed and receipt references were persisted", rule.ID)
 
 	if rule.NotifyPhone != "" && w.Notifier != nil {
 		w.Notifier.SendExecutionReport(rule.NotifyPhone, NotificationOpts{

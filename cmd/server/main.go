@@ -31,7 +31,7 @@ func main() {
 		log.Fatalf("Fatal error initializing ethclient: %v", err)
 	}
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseSecretKey, cfg.SupabasePublishableKey)
 	shopper := nanopay.NewShopper()
 	notifier := whatsapp.NewNotifier(cfg)
 
@@ -47,9 +47,13 @@ func main() {
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "healthy",
-			"engine": "rova-agent-go",
+			"status":   "healthy",
+			"engine":   "rova-agent-go",
 			"arcChain": cfg.ChainID,
 		})
 	})
@@ -66,6 +70,10 @@ func main() {
 
 	executionsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		json.NewEncoder(w).Encode(store.ListExecutions())
 	})
 	mux.Handle("/api/agent/executions", security.RequireBearer(cfg.EngineAPIToken, executionsHandler))
@@ -75,7 +83,10 @@ func main() {
 		Addr:              serverAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 	}
 
 	go func() {

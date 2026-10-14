@@ -14,13 +14,15 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/google/uuid"
 	"rova-agent-go/pkg/config"
 )
@@ -67,7 +69,7 @@ func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 			continue
 		}
 
-		bodyBytes, err := io.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 
 		if err != nil {
@@ -77,7 +79,7 @@ func (c *CircleClient) fetchEntityPublicKey() (*rsa.PublicKey, error) {
 		}
 
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("Circle public key API error (%d): %s", resp.StatusCode, string(bodyBytes))
+			return nil, fmt.Errorf("Circle public key API error (%d)", resp.StatusCode)
 		}
 
 		var result struct {
@@ -163,9 +165,9 @@ type ContractExecutionRequest struct {
 
 type CircleTxResponse struct {
 	Data struct {
-		ID        string `json:"id"`
-		State     string `json:"state"`
-		TxHash    string `json:"txHash"`
+		ID          string `json:"id"`
+		State       string `json:"state"`
+		TxHash      string `json:"txHash"`
 		ErrorReason string `json:"errorReason,omitempty"`
 	} `json:"data"`
 }
@@ -187,51 +189,29 @@ func (c *CircleClient) TransferUSDCFromWallet(ctx context.Context, walletID stri
 	if c.Config.CircleAPIKey == "" || targetWalletID == "" {
 		return "", fmt.Errorf("Circle API key and Wallet ID are required for live USDC transfer")
 	}
+	if !common.IsHexAddress(recipient) {
+		return "", fmt.Errorf("recipient must be a valid EVM address")
+	}
 
 	usdcContract := c.Config.USDCContractAddress
-
-	amountInt := int64(amount * 1e6)
+	amountInt, err := c.scaledAmount(amount)
+	if err != nil {
+		return "", err
+	}
 	params := []interface{}{recipient, fmt.Sprintf("%d", amountInt)}
 
 	return c.ExecuteContractWithWallet(ctx, targetWalletID, usdcContract, "transfer(address,uint256)", params)
 }
 
-type SwapQuote struct {
-	SellCurrency       string  `json:"sellCurrency"`
-	BuyCurrency        string  `json:"buyCurrency"`
-	SellAmount         float64 `json:"sellAmount"`
-	EstimatedBuyAmount float64 `json:"estimatedBuyAmount"`
-	ExchangeRate       float64 `json:"exchangeRate"`
-	Strategy           string  `json:"strategy"`
-}
-
-func (c *CircleClient) GetSwapQuote(sellCurrency, buyCurrency string, amount float64) *SwapQuote {
-	rate := 0.92
-	if strings.ToUpper(buyCurrency) == "USDC" {
-		rate = 1.087
-	}
-	estBuy := amount * rate
-	strategy := c.Config.SwapStrategy
-	if strategy == "" {
-		strategy = "sidecar_uds"
-	}
-
-	return &SwapQuote{
-		SellCurrency:       sellCurrency,
-		BuyCurrency:        buyCurrency,
-		SellAmount:         amount,
-		EstimatedBuyAmount: estBuy,
-		ExchangeRate:       rate,
-		Strategy:           strategy,
-	}
-}
-
 func (c *CircleClient) GetWalletAddress(ctx context.Context, walletID string) (string, error) {
-	if strings.HasPrefix(walletID, "0x") {
+	if common.IsHexAddress(walletID) {
 		return walletID, nil
 	}
-	url := fmt.Sprintf("https://api.circle.com/v1/w3s/wallets/%s", walletID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if walletID == "" || c.Config.CircleAPIKey == "" {
+		return "", fmt.Errorf("Circle API key and wallet ID are required")
+	}
+	requestURL := fmt.Sprintf("https://api.circle.com/v1/w3s/wallets/%s", url.PathEscape(walletID))
+	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -242,6 +222,9 @@ func (c *CircleClient) GetWalletAddress(ctx context.Context, walletID string) (s
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("Circle wallet lookup failed with status %d", resp.StatusCode)
+	}
 
 	var result struct {
 		Data struct {
@@ -250,11 +233,11 @@ func (c *CircleClient) GetWalletAddress(ctx context.Context, walletID string) (s
 			} `json:"wallet"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.Data.Wallet.Address != "" {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err == nil && common.IsHexAddress(result.Data.Wallet.Address) {
 		return result.Data.Wallet.Address, nil
 	}
 
-	return "", fmt.Errorf("failed to resolve wallet address for ID %s", walletID)
+	return "", fmt.Errorf("failed to resolve a valid wallet address")
 }
 
 func (c *CircleClient) SwapStablecoins(ctx context.Context, walletAddress string, buyCurrency string, amount float64) (string, error) {
@@ -280,6 +263,17 @@ func (c *CircleClient) SwapViaUDSSidecar(ctx context.Context, walletAddress, sel
 	}
 	if len(c.Config.SwapSidecarToken) < 32 {
 		return "", fmt.Errorf("ROVA_SIDECAR_TOKEN must be configured with at least 32 characters")
+	}
+	if !common.IsHexAddress(walletAddress) {
+		return "", fmt.Errorf("wallet address must be a valid EVM address")
+	}
+	sellCurrency = strings.ToUpper(sellCurrency)
+	buyCurrency = strings.ToUpper(buyCurrency)
+	if (sellCurrency != "USDC" && sellCurrency != "EURC") || (buyCurrency != "USDC" && buyCurrency != "EURC") || sellCurrency == buyCurrency {
+		return "", fmt.Errorf("swap currencies must be different and limited to USDC or EURC")
+	}
+	if _, err := c.scaledAmount(amount); err != nil {
+		return "", err
 	}
 
 	socketPath := c.Config.SwapSidecarSocket
@@ -330,17 +324,23 @@ func (c *CircleClient) SwapViaUDSSidecar(ctx context.Context, walletAddress, sel
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("sidecar UDS request failed (%s): %w", socketPath, err)
+		return "", fmt.Errorf("swap sidecar request failed")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("swap sidecar rejected the request with status %d", resp.StatusCode)
+	}
 
 	var res SwapSidecarResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&res); err != nil {
 		return "", fmt.Errorf("failed to decode sidecar response: %w", err)
 	}
 
 	if !res.OK {
-		return "", fmt.Errorf("swap sidecar returned error: %s", res.Error)
+		return "", fmt.Errorf("swap sidecar rejected the request")
+	}
+	if !strings.HasPrefix(res.TxHash, "0x") {
+		return "", fmt.Errorf("swap sidecar did not return an on-chain transaction hash")
 	}
 
 	return res.TxHash, nil
@@ -354,15 +354,14 @@ func (c *CircleClient) SwapStablecoinsWithWallet(ctx context.Context, walletID s
 
 	targetAddr := walletAddress
 	if targetAddr == "" {
-		if addr, err := c.GetWalletAddress(ctx, walletID); err == nil {
-			targetAddr = addr
-		} else {
-			targetAddr = c.Config.CircleWalletID
+		resolvedAddress, err := c.GetWalletAddress(ctx, walletID)
+		if err != nil {
+			return "", err
 		}
+		targetAddr = resolvedAddress
 	}
 
-	quote := c.GetSwapQuote(sellCurrency, buyCurrency, amount)
-	log.Printf("[Sidecar UDS] Executing swap: %.2f %s -> %s for wallet %s (Est: %.4f)", amount, sellCurrency, buyCurrency, targetAddr, quote.EstimatedBuyAmount)
+	log.Printf("[Sidecar UDS] Executing approved swap request")
 
 	return c.SwapViaUDSSidecar(ctx, targetAddr, sellCurrency, buyCurrency, amount)
 }
@@ -380,19 +379,30 @@ func (c *CircleClient) BridgeCCTPWithWallet(ctx context.Context, walletID string
 		return "", fmt.Errorf("Circle API key is required for live bridge execution")
 	}
 
-	domain := "0" // Ethereum Sepolia
-	if strings.Contains(strings.ToLower(toChain), "base") {
-		domain = "6" // Base Sepolia
+	if !common.IsHexAddress(walletAddress) {
+		return "", fmt.Errorf("bridge recipient must be a valid EVM address")
+	}
+	domain := ""
+	switch strings.ToLower(strings.TrimSpace(toChain)) {
+	case "ethereum", "ethereum sepolia":
+		domain = "0"
+	case "base", "base sepolia":
+		domain = "6"
+	default:
+		return "", fmt.Errorf("unsupported bridge destination")
 	}
 
 	recipientBytes32 := fmt.Sprintf("0x000000000000000000000000%s", strings.TrimPrefix(walletAddress, "0x"))
-	amountInt := int64(amount * 1e6)
+	amountInt, err := c.scaledAmount(amount)
+	if err != nil {
+		return "", err
+	}
 	params := []interface{}{domain, recipientBytes32, fmt.Sprintf("%d", amountInt), c.Config.USDCContractAddress}
 
 	return c.ExecuteContractWithWallet(ctx, walletID, "0x9f3b8679c73c2Fef8b59B4f3444d4e156fb70AA5", "depositForBurn(uint64,bytes32,uint256,address)", params)
 }
 
-func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet string, savingsSubWallet string, amount float64) (string, error) {
+func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet string, amount float64) (string, error) {
 	if err := c.requireExecutionEnabled(); err != nil {
 		return "", err
 	}
@@ -401,9 +411,12 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 		return "", fmt.Errorf("Circle API key is required for savings vault deposit")
 	}
 
-	vaultAddr := os.Getenv("ROVA_SAVINGS_VAULT_ADDRESS")
+	vaultAddr := c.Config.SavingsVaultAddress
 	if vaultAddr == "" {
-		vaultAddr = "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
+		return "", fmt.Errorf("ROVA_SAVINGS_VAULT_ADDRESS is required for savings vault deposits")
+	}
+	if !common.IsHexAddress(vaultAddr) {
+		return "", fmt.Errorf("ROVA_SAVINGS_VAULT_ADDRESS must be a valid EVM address")
 	}
 
 	tokenAddr := c.Config.USDCContractAddress
@@ -411,7 +424,10 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 		tokenAddr = "0x3600000000000000000000000000000000000000"
 	}
 
-	amountInt := int64(amount * 1e6)
+	amountInt, err := c.scaledAmount(amount)
+	if err != nil {
+		return "", err
+	}
 	lockDuration := int64(30 * 86400) // Default 30-day timelock if unassigned
 
 	execWallet := userWallet
@@ -419,10 +435,10 @@ func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet strin
 		execWallet = c.Config.CircleWalletID
 	}
 
-	log.Printf("[Savings Vault] Executing smart contract deposit: %.2f USDC into %s (Lock: 30 days)", amount, vaultAddr)
+	log.Printf("[Savings Vault] Executing approved smart contract deposit")
 
 	// Step 1: Approve RovaSavingsVault contract to spend USDC
-	_, err := c.ExecuteContractWithWallet(ctx, execWallet, tokenAddr, "approve(address,uint256)", []interface{}{vaultAddr, fmt.Sprintf("%d", amountInt)})
+	_, err = c.ExecuteContractWithWallet(ctx, execWallet, tokenAddr, "approve(address,uint256)", []interface{}{vaultAddr, fmt.Sprintf("%d", amountInt)})
 	if err != nil {
 		return "", fmt.Errorf("failed to approve USDC for RovaSavingsVault: %w", err)
 	}
@@ -441,9 +457,15 @@ func (c *CircleClient) RedeemSavingsVault(ctx context.Context, userWallet string
 		return "", fmt.Errorf("Circle API key is required for savings vault redemption")
 	}
 
-	vaultAddr := os.Getenv("ROVA_SAVINGS_VAULT_ADDRESS")
+	vaultAddr := c.Config.SavingsVaultAddress
 	if vaultAddr == "" {
-		vaultAddr = "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
+		return "", fmt.Errorf("ROVA_SAVINGS_VAULT_ADDRESS is required for savings vault redemptions")
+	}
+	if !common.IsHexAddress(vaultAddr) {
+		return "", fmt.Errorf("ROVA_SAVINGS_VAULT_ADDRESS must be a valid EVM address")
+	}
+	if depositID <= 0 {
+		return "", fmt.Errorf("deposit ID must be positive")
 	}
 
 	execWallet := userWallet
@@ -451,7 +473,7 @@ func (c *CircleClient) RedeemSavingsVault(ctx context.Context, userWallet string
 		execWallet = c.Config.CircleWalletID
 	}
 
-	log.Printf("[Savings Vault] Executing smart contract redeem: depositId #%d from %s", depositID, vaultAddr)
+	log.Printf("[Savings Vault] Executing approved smart contract redemption")
 
 	return c.ExecuteContractWithWallet(ctx, execWallet, vaultAddr, "redeemSavings(uint256)", []interface{}{fmt.Sprintf("%d", depositID)})
 }
@@ -472,6 +494,12 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 
 	if c.Config.CircleAPIKey == "" || targetWalletID == "" {
 		return "", fmt.Errorf("Circle API key and Wallet ID are required for live contract execution")
+	}
+	if !common.IsHexAddress(contractAddress) {
+		return "", fmt.Errorf("contract address must be a valid EVM address")
+	}
+	if strings.HasPrefix(targetWalletID, "0x") && !common.IsHexAddress(targetWalletID) {
+		return "", fmt.Errorf("wallet address must be a valid EVM address")
 	}
 
 	// Generate fresh entitySecretCiphertext for this request
@@ -507,6 +535,18 @@ func (c *CircleClient) requireExecutionEnabled() error {
 	return nil
 }
 
+func (c *CircleClient) scaledAmount(amount float64) (int64, error) {
+	maximum := math.Max(c.Config.MaxAutonomousAmount, c.Config.MaxWhatsAppActionAmount)
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 || amount > maximum {
+		return 0, fmt.Errorf("amount must be greater than zero and no more than %.2f", maximum)
+	}
+	scaled := math.Round(amount * 1e6)
+	if math.Abs(amount*1e6-scaled) > 1e-6 {
+		return 0, fmt.Errorf("amount supports at most six decimal places")
+	}
+	return int64(scaled), nil
+}
+
 func (c *CircleClient) postTransaction(ctx context.Context, url string, payload interface{}) (string, error) {
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -527,9 +567,9 @@ func (c *CircleClient) postTransaction(ctx context.Context, url string, payload 
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("Circle API error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return "", fmt.Errorf("Circle API request failed with status %d", resp.StatusCode)
 	}
 
 	var res CircleTxResponse
@@ -572,10 +612,10 @@ func (c *CircleClient) waitForTransactionCompletion(ctx context.Context, txID st
 			continue
 		}
 
-		bodyBytes, err := io.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if err != nil || resp.StatusCode >= 400 {
-			log.Printf("[Circle] Polling error (%d): %s", resp.StatusCode, string(bodyBytes))
+			log.Printf("[Circle] Polling failed with status %d", resp.StatusCode)
 			continue
 		}
 
@@ -596,17 +636,13 @@ func (c *CircleClient) waitForTransactionCompletion(ctx context.Context, txID st
 				if tx.TxHash != "" {
 					return tx.TxHash, nil
 				}
-				return tx.ID, nil
+				return "", fmt.Errorf("Circle reported completion without an on-chain transaction hash")
 			}
 			if tx.State == "FAILED" || tx.State == "CANCELLED" || tx.State == "DENIED" {
-				errReason := tx.ErrorReason
-				if errReason == "" {
-					errReason = "Transaction failed on Circle/Arc network"
-				}
-				return "", fmt.Errorf("Circle API transaction failed (State: %s): %s", tx.State, errReason)
+				return "", fmt.Errorf("Circle transaction failed with state %s", tx.State)
 			}
 		}
 	}
 
-	return "", fmt.Errorf("Circle transaction %s timed out after 30 seconds waiting for on-chain confirmation", txID)
+	return "", fmt.Errorf("Circle transaction timed out waiting for on-chain confirmation")
 }

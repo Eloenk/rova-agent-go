@@ -5,5 +5,6 @@
 *.db
 *.out
 bin/
+node_modules/
 .agent/
 .agents/

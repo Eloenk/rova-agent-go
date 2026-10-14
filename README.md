@@ -8,7 +8,7 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 
 ## 🌟 Architectural Overview
 
-`rova-agent-go` is the decoupled, 24/7 backend engine for Rova. It handles autonomous rate watching, microsecond nanopayment rate shopping, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction.
+`rova-agent-go` is the decoupled backend engine for Rova. It handles policy-gated rate watching, parallel quote simulation, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -70,8 +70,9 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 ### 4. Circle Developer-Controlled Wallets SDK Client (`pkg/circle/client.go`)
 * Direct HTTP client handling Circle's Developer-Controlled Wallets API for transfers, contract executions, and HSM transaction signing.
 
-### 5. Microsecond Goroutine Nanopayments (`pkg/nanopay/x402.go`)
-* Executes parallel RFQ quote queries across multiple rate providers simultaneously using Go goroutines (`sync.WaitGroup`) to pick the best rate before every trade.
+### 5. Parallel Quote Simulation (`pkg/nanopay/shop.go`)
+* Compares three simulated provider quotes concurrently using Go goroutines (`sync.WaitGroup`).
+* Simulated quotes are marked non-executable and cannot trigger transfers. Live x402 verification and settlement remain an explicit future integration gate.
 
 ### 6. Arc Smart Contract Integration (`pkg/chain/`)
 * Native `go-ethereum` (`ethclient`) binding supporting EIP-1559 transaction signing on Arc Testnet (Chain ID `5042002`).
@@ -96,7 +97,7 @@ rova-agent-go/
 │   ├── chain/             # go-ethereum Arc Testnet Client & ERC-20 Bindings
 │   ├── circle/            # Circle Developer-Controlled Wallets & Entity Secret Crypto
 │   ├── config/            # YAML & Environment Configuration Loader
-│   ├── nanopay/           # x402 Goroutine Nanopayment Rate Shopping Engine
+│   ├── nanopay/           # Non-executable parallel quote simulation
 │   ├── rpc/               # JSON-RPC Handlers
 │   └── whatsapp/          # Whatsmeow SQLite Bot & Webhook Notifier
 ├── bin/                   # Compiled Binaries (whatsapp-bot.exe, server.exe, gen-secret.exe)
@@ -111,7 +112,8 @@ rova-agent-go/
 ## ⚙️ How to Run
 
 ### Prerequisites
-* **Go 1.22+** installed on your system.
+* **Go 1.25+** installed on your system.
+* **Node.js 20+** only when running the optional Circle SwapKit sidecar.
 
 ---
 
@@ -149,16 +151,27 @@ go run ./cmd/gen-secret -pubkey "<paste-circle-developer-pubkey-here>"
 go run ./cmd/server
 ```
 
+### D. Run the Optional Swap Sidecar
+
+The sidecar reads runtime values only through `sidecar/config.js`, binds to a Unix socket by default (or loopback TCP on Windows), and requires bearer authentication. Install with scripts disabled, keep the execution gate off until an approved testnet rehearsal, then start it separately:
+
+```bash
+cd sidecar
+npm ci --ignore-scripts
+npm start
+```
+
 ---
 
 ## 🔑 Runtime Configuration
 
 `pkg/config/config.go` is the engine's typed configuration boundary. It combines non-secret defaults from `config.yaml` with credentials and deployment-specific values supplied by the process environment. Production secrets belong in the hosting platform's secret manager, not in TypeScript/Go source, YAML, committed `.env` files, logs, or chat.
 
-Copy `.env.example` only for local development. Every `.env` variant except `.env.example` is ignored by Git.
+Copy `.env.example` only for local development. Every `.env` variant except `.env.example` is ignored by Git. The engine does not read dotenv files unless the operator explicitly sets `ROVA_LOAD_DOTENV=true` in the parent process; dotenv values never override already injected environment variables. Do not share one `.env` file across users or environments.
 
 ```env
 # Bind locally unless a protected reverse proxy is configured
+EXECUTION_MODE=circle
 ROVA_ENGINE_BIND=127.0.0.1
 PORT=8080
 ROVA_ENGINE_API_TOKEN=
@@ -178,6 +191,15 @@ CIRCLE_WALLET_ID=
 # Server-only persistence
 SUPABASE_URL=
 SUPABASE_SECRET_KEY=
+# Optional Realtime key; when blank, the engine polls through server-only REST.
+SUPABASE_PUBLISHABLE_KEY=
+
+# Authenticated Circle SwapKit sidecar
+ROVA_SIDECAR_TOKEN=
+ROVA_SWAP_SOCKET=/tmp/rova-swap.sock
+SWAP_SIDECAR_PORT=
+ARC_CHAIN=Arc_Testnet
+ROVA_SAVINGS_VAULT_ADDRESS=0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB
 
 # Arc testnet configuration
 ARC_RPC_URL=https://rpc.testnet.arc.network

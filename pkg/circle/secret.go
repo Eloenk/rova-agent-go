@@ -51,8 +51,7 @@ func FetchCirclePublicKey(apiKey string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("circle API HTTP %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("circle API HTTP %d", resp.StatusCode)
 	}
 
 	var res struct {
@@ -60,7 +59,7 @@ func FetchCirclePublicKey(apiKey string) (string, error) {
 			PublicKey string `json:"publicKey"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&res); err != nil {
 		return "", fmt.Errorf("failed to parse Circle API response: %w", err)
 	}
 

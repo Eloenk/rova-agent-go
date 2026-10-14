@@ -19,6 +19,7 @@ type Store struct {
 	executions  []*ExecutionRecord
 	supabaseURL string
 	supabaseKey string
+	realtimeKey string
 	httpClient  *http.Client
 	realtime    *RealtimeClient
 }
@@ -32,32 +33,42 @@ func NewStore() *Store {
 	}
 }
 
-func NewSupabaseStore(url, key string) *Store {
+func NewSupabaseStore(url, key, realtimeKey string) *Store {
 	s := NewStore()
 	s.supabaseURL = url
 	s.supabaseKey = key
+	s.realtimeKey = realtimeKey
 	return s
 }
 
-func (s *Store) SetSupabaseCredentials(url, key string) {
+func (s *Store) SetSupabaseCredentials(url, key, realtimeKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.supabaseURL = url
 	s.supabaseKey = key
+	s.realtimeKey = realtimeKey
 }
 
 func (s *Store) StartRealtimeSubscription(ctx context.Context) {
 	s.mu.Lock()
 	url := s.supabaseURL
-	key := s.supabaseKey
+	serviceKey := s.supabaseKey
+	realtimeKey := s.realtimeKey
 	s.mu.Unlock()
 
-	if url == "" || key == "" {
-		log.Println("[Store] Supabase credentials unconfigured. Realtime disabled.")
+	if url == "" || serviceKey == "" {
+		log.Println("[Store] Supabase service credentials unconfigured; state synchronization is disabled")
 		return
 	}
 
-	rc := NewRealtimeClient(url, key, s)
+	s.syncInitialState()
+	go s.pollState(ctx, 30*time.Second)
+	if realtimeKey == "" {
+		log.Println("[Store] Supabase publishable Realtime key unconfigured; using periodic REST synchronization")
+		return
+	}
+
+	rc := NewRealtimeClient(url, realtimeKey, s)
 	s.mu.Lock()
 	s.realtime = rc
 	s.mu.Unlock()
@@ -65,13 +76,28 @@ func (s *Store) StartRealtimeSubscription(ctx context.Context) {
 	rc.Start(ctx)
 }
 
+func (s *Store) pollState(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.syncInitialState()
+		}
+	}
+}
+
 func (s *Store) syncInitialState() {
 	rules, err := s.fetchRulesFromSupabase()
 	if err == nil {
-		s.mu.Lock()
-		for _, r := range rules {
-			s.rules[r.ID] = r
+		nextRules := make(map[string]*AgentRule, len(rules))
+		for _, rule := range rules {
+			nextRules[rule.ID] = rule
 		}
+		s.mu.Lock()
+		s.rules = nextRules
 		s.mu.Unlock()
 		log.Printf("[Realtime State Sync] Synchronized %d active rules into memory cache.", len(rules))
 	} else {
@@ -80,10 +106,12 @@ func (s *Store) syncInitialState() {
 
 	intents, err := s.fetchStandingIntentsFromSupabase()
 	if err == nil {
-		s.mu.Lock()
-		for _, i := range intents {
-			s.intents[i.ID] = i
+		nextIntents := make(map[string]*StandingIntent, len(intents))
+		for _, intent := range intents {
+			nextIntents[intent.ID] = intent
 		}
+		s.mu.Lock()
+		s.intents = nextIntents
 		s.mu.Unlock()
 		log.Printf("[Realtime State Sync] Synchronized %d active standing intents into memory cache.", len(intents))
 	} else {
@@ -200,12 +228,11 @@ func (s *Store) fetchRulesFromSupabase() ([]*AgentRule, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("supabase HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("supabase HTTP %d", resp.StatusCode)
 	}
 
 	var dtos []supabaseRuleDto
-	if err := json.NewDecoder(resp.Body).Decode(&dtos); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&dtos); err != nil {
 		return nil, err
 	}
 
@@ -355,12 +382,11 @@ func (s *Store) fetchStandingIntentsFromSupabase() ([]*StandingIntent, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("supabase HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("supabase HTTP %d", resp.StatusCode)
 	}
 
 	var dtos []supabaseStandingIntentDto
-	if err := json.NewDecoder(resp.Body).Decode(&dtos); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&dtos); err != nil {
 		return nil, err
 	}
 

@@ -33,7 +33,7 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 	// Mode 1: Circle Managed Wallets
 	if cfg.ExecutionMode == "circle" {
 		var addr common.Address
-		if cfg.CircleWalletID != "" && len(cfg.CircleWalletID) >= 42 && strings.HasPrefix(cfg.CircleWalletID, "0x") {
+		if common.IsHexAddress(cfg.CircleWalletID) {
 			addr = common.HexToAddress(cfg.CircleWalletID)
 		}
 		return &ChainClient{
@@ -50,6 +50,8 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 		c, err := ethclient.Dial(cfg.ArcRPCURL)
 		if err == nil {
 			client = c
+		} else if cfg.ExecutionEnabled {
+			return nil, fmt.Errorf("direct execution RPC endpoint is unavailable")
 		}
 	}
 
@@ -65,7 +67,10 @@ func NewChainClient(cfg *config.Config) (*ChainClient, error) {
 				fromAddress = crypto.PubkeyToAddress(*pubKeyECDSA)
 			}
 		} else {
-			log.Printf("[ChainClient] Warning: Failed to parse private key: %v", err)
+			if cfg.ExecutionEnabled {
+				return nil, fmt.Errorf("direct execution private key is invalid")
+			}
+			log.Printf("[ChainClient] Warning: Direct-signing key is invalid; remaining read-only")
 		}
 	} else {
 		log.Println("[ChainClient] Notice: ROVA_AGENT_PRIVATE_KEY not set. Operating in read-only / Circle custody mode.")
@@ -87,6 +92,12 @@ func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, valu
 	}
 	if c.RPCClient == nil || c.PrivateKey == nil {
 		return "", fmt.Errorf("RPC client and private key are required to sign and send transactions")
+	}
+	if to == (common.Address{}) {
+		return "", fmt.Errorf("transaction destination cannot be the zero address")
+	}
+	if value == nil || value.Sign() < 0 {
+		return "", fmt.Errorf("transaction value must be non-negative")
 	}
 
 	nonce, err := c.RPCClient.PendingNonceAt(ctx, c.Address)
@@ -114,8 +125,11 @@ func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, valu
 }
 
 func (c *ChainClient) GetBalanceERC20WithFailover(ctx context.Context, walletAddress string, tokenAddress string) (float64, error) {
-	if walletAddress == "" || !strings.HasPrefix(walletAddress, "0x") || len(walletAddress) < 42 {
-		return 0, fmt.Errorf("invalid wallet address: %s", walletAddress)
+	if !common.IsHexAddress(walletAddress) {
+		return 0, fmt.Errorf("invalid wallet address")
+	}
+	if !common.IsHexAddress(tokenAddress) {
+		return 0, fmt.Errorf("invalid token address")
 	}
 
 	urls := c.Config.ArcRPCURLs
@@ -155,7 +169,10 @@ func (c *ChainClient) GetBalanceERC20WithFailover(ctx context.Context, walletAdd
 		return resFloat, nil
 	}
 
-	return 0, fmt.Errorf("all RPC endpoints failed, last error: %v", lastErr)
+	if lastErr != nil {
+		return 0, fmt.Errorf("all configured RPC endpoints failed")
+	}
+	return 0, fmt.Errorf("no RPC endpoints are configured")
 }
 
 func (c *ChainClient) GetBalanceUSDCWithFailover(ctx context.Context, walletAddress string) (float64, error) {
@@ -194,7 +211,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 			targetMap := make(map[string]bool)
 			for _, w := range targetWallets {
 				cleanW := strings.TrimSpace(w)
-				if strings.HasPrefix(cleanW, "0x") && len(cleanW) == 42 {
+				if common.IsHexAddress(cleanW) {
 					targetMap[strings.ToLower(cleanW)] = true
 					toTopicHashes = append(toTopicHashes, common.BytesToHash(common.LeftPadBytes(common.HexToAddress(cleanW).Bytes(), 32)))
 				}
@@ -206,10 +223,10 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 			}
 
 			for _, wssURL := range wssURLs {
-				log.Printf("[Chain WSS] Connecting to WebSocket log stream for %d active rule wallet(s): %s", len(toTopicHashes), wssURL)
+				log.Printf("[Chain WSS] Connecting to configured endpoint for %d active rule wallet(s)", len(toTopicHashes))
 				client, err := ethclient.DialContext(ctx, wssURL)
 				if err != nil {
-					log.Printf("[Chain WSS] Connection failed for %s: %v", wssURL, err)
+					log.Printf("[Chain WSS] Connection failed")
 					time.Sleep(2 * time.Second)
 					continue
 				}
@@ -222,13 +239,13 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 				logs := make(chan types.Log)
 				sub, err := client.SubscribeFilterLogs(ctx, query, logs)
 				if err != nil {
-					log.Printf("[Chain WSS] Subscription failed for %s: %v", wssURL, err)
+					log.Printf("[Chain WSS] Subscription failed")
 					client.Close()
 					time.Sleep(2 * time.Second)
 					continue
 				}
 
-				log.Printf("[Chain WSS] Subscribed to real-time USDC Transfer events ONLY for %d target wallet(s) on %s", len(toTopicHashes), wssURL)
+				log.Printf("[Chain WSS] Subscribed to real-time USDC transfer events for %d target wallet(s)", len(toTopicHashes))
 
 				for {
 					select {
@@ -236,8 +253,8 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 						sub.Unsubscribe()
 						client.Close()
 						return
-					case err := <-sub.Err():
-						log.Printf("[Chain WSS] Subscription error: %v", err)
+					case <-sub.Err():
+						log.Printf("[Chain WSS] Subscription closed")
 						sub.Unsubscribe()
 						client.Close()
 						goto RECONNECT
@@ -251,7 +268,7 @@ func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWal
 								amount, _ := new(big.Float).Quo(balFloat, decimals).Float64()
 
 								txHash := vLog.TxHash.Hex()
-								log.Printf("[Chain WSS Event] Real-Time USDC Transfer Detected for Rule Wallet! To: %s, Amount: %.2f USDC, Tx: %s", toAddr, amount, txHash)
+								log.Printf("[Chain WSS Event] Transfer detected for a monitored wallet")
 								onTransfer(toAddr, amount, txHash)
 							}
 						}

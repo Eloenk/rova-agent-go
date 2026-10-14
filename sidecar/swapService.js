@@ -1,56 +1,47 @@
-require("dotenv").config({ path: "../.env.local" });
-require("dotenv").config({ path: "../.env" });
-require("dotenv").config();
-
-const { AppKit, SwapChain } = require("@circle-fin/app-kit");
+const { SwapKit, SwapChain } = require("@circle-fin/swap-kit");
 const { createCircleWalletsAdapter } = require("@circle-fin/adapter-circle-wallets");
+const config = require('./config');
 
 let cachedKit = null;
 let cachedAdapter = null;
 
 function getKit() {
-  if (!cachedKit) cachedKit = new AppKit();
+  if (!cachedKit) {
+    cachedKit = new SwapKit({ disableAnalytics: true, disableErrorReporting: true });
+  }
   return cachedKit;
 }
 
 function getAdapter() {
   if (cachedAdapter) return cachedAdapter;
-  const apiKey = process.env.CIRCLE_API_KEY;
-  const entitySecret = process.env.CIRCLE_ENTITY_SECRET;
-  if (!apiKey || !entitySecret) {
-    throw new Error("CIRCLE_API_KEY / CIRCLE_ENTITY_SECRET not configured in environment");
+  if (!config.circleAPIKey || !/^(?:0x)?[a-fA-F0-9]{64}$/.test(config.circleEntitySecret)) {
+    throw new Error("Circle API key and 32-byte entity secret are required");
   }
-  cachedAdapter = createCircleWalletsAdapter({ apiKey, entitySecret });
+  cachedAdapter = createCircleWalletsAdapter({
+    apiKey: config.circleAPIKey,
+    entitySecret: config.circleEntitySecret.replace(/^0x/, ''),
+  });
   return cachedAdapter;
 }
 
 function getSwapChain() {
-  const chainKey = process.env.NEXT_PUBLIC_ARC_CHAIN || "Arc_Testnet";
-  const resolved = SwapChain[chainKey];
+  const resolved = SwapChain[config.arcChain];
   if (!resolved) {
-    throw new Error(`NEXT_PUBLIC_ARC_CHAIN must be a SwapChain identifier (got "${chainKey}")`);
+    throw new Error("ARC_CHAIN must be a supported SwapChain identifier");
   }
   return resolved;
-}
-
-function getKitKey() {
-  const kitKey = process.env.KIT_KEY || process.env.NEXT_PUBLIC_CIRCLE_KIT_KEY || "";
-  if (!kitKey) {
-    throw new Error("KIT_KEY not configured — required for AppKit swap");
-  }
-  return kitKey;
 }
 
 async function getSwapQuote({ sellCurrency, buyCurrency, amount, walletAddress }) {
   const slippageBps = 50;
   const address = walletAddress || "0x0000000000000000000000000000000000000000";
 
-  const result = await getKit().estimateSwap({
+  const result = await getKit().estimate({
     from: { adapter: getAdapter(), chain: getSwapChain(), address },
     tokenIn: sellCurrency,
     tokenOut: buyCurrency,
     amountIn: String(amount),
-    config: { kitKey: getKitKey() },
+    config: { apiKey: config.circleAPIKey, slippageBps },
   });
 
   const estimatedBuyAmount = Number(result.estimatedOutput.amount);
@@ -69,7 +60,7 @@ async function getSwapQuote({ sellCurrency, buyCurrency, amount, walletAddress }
 }
 
 async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, maxSlippageBps = 50 }) {
-	if (String(process.env.ROVA_EXECUTION_ENABLED).toLowerCase() !== 'true') {
+	if (!config.executionEnabled) {
 		throw new Error('Swap execution is disabled until ROVA_EXECUTION_ENABLED=true is explicitly approved');
 	}
   if (sellCurrency === buyCurrency) {
@@ -84,15 +75,14 @@ async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, m
   if (!['USDC', 'EURC'].includes(sellCurrency) || !['USDC', 'EURC'].includes(buyCurrency)) {
     throw new Error('Only USDC and EURC swaps are supported');
   }
-	const maximumAmount = Number(process.env.ROVA_MAX_AUTONOMOUS_AMOUNT_USDC || 100);
-	if (!Number.isFinite(amount) || amount > maximumAmount) {
-		throw new Error(`amount must be no more than ${maximumAmount}`);
+	if (!Number.isFinite(amount) || amount > config.maxSwapAmount) {
+		throw new Error(`amount must be no more than ${config.maxSwapAmount}`);
 	}
 
   const quote = await getSwapQuote({ sellCurrency, buyCurrency, amount, walletAddress });
   const slippageBps = maxSlippageBps || 50;
 
-  console.log(`[SwapSidecar] Executing swap: ${amount} ${sellCurrency} -> ~${quote.estimatedBuyAmount} ${buyCurrency} for ${walletAddress}`);
+  console.log('[SwapSidecar] Executing approved swap');
 
   const params = {
     from: { adapter: getAdapter(), chain: getSwapChain(), address: walletAddress },
@@ -102,7 +92,7 @@ async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, m
   };
 
   const baseConfig = {
-    kitKey: getKitKey(),
+    apiKey: config.circleAPIKey,
     slippageBps,
   };
 
@@ -117,7 +107,7 @@ async function executeSwap({ walletAddress, sellCurrency, buyCurrency, amount, m
         config: { ...baseConfig, allowanceStrategy: "approve" },
       });
     } else {
-      console.error("[SwapSidecar] kit.swap() failed:", msg);
+      console.error("[SwapSidecar] Swap provider request failed");
       throw err;
     }
   }

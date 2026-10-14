@@ -11,17 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"rova-agent-go/pkg/config"
 )
 
 type UserRecord struct {
-	ID                  string `json:"id"`
-	Email               string `json:"email"`
 	CircleWalletAddress string `json:"circle_wallet_address"`
 }
 
@@ -73,24 +69,8 @@ func fetchHTTP(urlStr string, headers map[string]string, postBody []byte) ([]byt
 	resp, err := client.Do(req)
 	if err == nil {
 		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return body, resp.StatusCode, err
-	}
-
-	// Windows process socket fallback via system curl.exe
-	if strings.Contains(err.Error(), "connectex") || strings.Contains(err.Error(), "forbidden") {
-		args := []string{"-s", urlStr}
-		if len(postBody) > 0 {
-			args = append(args, "-X", "POST", "-d", string(postBody))
-		}
-		for k, v := range headers {
-			args = append(args, "-H", fmt.Sprintf("%s: %s", k, v))
-		}
-		cmd := exec.Command("curl.exe", args...)
-		output, cmdErr := cmd.Output()
-		if cmdErr == nil && len(output) > 0 {
-			return output, 200, nil
-		}
 	}
 
 	return nil, 0, err
@@ -145,18 +125,6 @@ func getOnchainBalance(rpcURL, tokenAddress, walletAddress string) (float64, err
 }
 
 func main() {
-	envFiles := []string{
-		".env.local",
-		".env",
-		"../.env.local",
-		"../.env",
-		"../rova/.env.local",
-		"../../rova/.env.local",
-	}
-	for _, file := range envFiles {
-		_ = godotenv.Overload(file)
-	}
-
 	emailFlag := flag.String("email", "", "User email address to fetch Circle wallet for")
 	flag.Parse()
 
@@ -167,34 +135,41 @@ func main() {
 	fmt.Println("==================================================================")
 
 	targetEmail := strings.TrimSpace(strings.ToLower(*emailFlag))
+	if targetEmail == "" {
+		fmt.Println("An explicit -email value is required; refusing to enumerate user records.")
+		return
+	}
 
 	// 1. Query Supabase for User's Circle Wallet Address
 	var circleWallet string
-	var foundUser *UserRecord
 
-	if cfg.SupabaseURL != "" && cfg.SupabaseServiceRoleKey != "" {
-		fmt.Printf("🔍 1. Querying Supabase Database (%s)...\n", cfg.SupabaseURL)
-		
-		queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address", cfg.SupabaseURL)
-		if targetEmail != "" {
-			queryURL += fmt.Sprintf("&email=eq.%s", url.QueryEscape(targetEmail))
-		} else {
-			queryURL += "&limit=5"
+	if cfg.SupabaseURL != "" && cfg.SupabaseSecretKey != "" {
+		fmt.Printf("🔍 1. Querying the configured Supabase project...\n")
+
+		parsedURL, err := url.Parse(cfg.SupabaseURL)
+		if err != nil {
+			fmt.Println("   ⚠️ Supabase URL is invalid.")
+			return
 		}
+		parsedURL.Path = strings.TrimRight(parsedURL.Path, "/") + "/rest/v1/users"
+		query := parsedURL.Query()
+		query.Set("select", "circle_wallet_address")
+		query.Set("email", "eq."+targetEmail)
+		query.Set("limit", "1")
+		parsedURL.RawQuery = query.Encode()
+		queryURL := parsedURL.String()
 
 		headers := map[string]string{
-			"apikey":        cfg.SupabaseServiceRoleKey,
-			"Authorization": "Bearer " + cfg.SupabaseServiceRoleKey,
+			"apikey":        cfg.SupabaseSecretKey,
+			"Authorization": "Bearer " + cfg.SupabaseSecretKey,
 		}
 
 		bodyBytes, statusCode, err := fetchHTTP(queryURL, headers, nil)
 		if err == nil && statusCode == 200 {
 			var users []UserRecord
 			if err := json.Unmarshal(bodyBytes, &users); err == nil && len(users) > 0 {
-				foundUser = &users[0]
-				circleWallet = foundUser.CircleWalletAddress
-				fmt.Printf("   ✅ Supabase User Found:   %s\n", foundUser.Email)
-				fmt.Printf("   💳 Circle Wallet Address:  %s\n", circleWallet)
+				circleWallet = users[0].CircleWalletAddress
+				fmt.Printf("   ✅ Matching user wallet found.\n")
 			} else {
 				fmt.Printf("   ℹ️ No matching user found in database.\n")
 			}
@@ -208,7 +183,6 @@ func main() {
 	// 2. Query Onchain Balances directly via Arc Testnet RPC
 	if circleWallet != "" {
 		fmt.Println("\n💰 2. Querying Arc Testnet RPC Onchain Balances...")
-		fmt.Printf("   🌐 RPC Endpoint: %s\n", cfg.ArcRPCURL)
 
 		usdcBal, errUsdc := getOnchainBalance(cfg.ArcRPCURL, cfg.USDCContractAddress, circleWallet)
 		if errUsdc == nil {

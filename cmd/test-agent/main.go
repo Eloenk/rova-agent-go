@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	"rova-agent-go/pkg/ai"
 	"rova-agent-go/pkg/circle"
 	"rova-agent-go/pkg/config"
@@ -15,11 +14,6 @@ import (
 )
 
 func main() {
-	envFiles := []string{".env.local", ".env", "../.env.local", "../.env", "../../rova/.env.local"}
-	for _, file := range envFiles {
-		_ = godotenv.Overload(file)
-	}
-
 	promptFlag := flag.String("prompt", "send 50 USDC to 0x71C7656EC7ab88b098defB751B7401B5f6d8976F", "Natural language intent prompt to test")
 	flag.Parse()
 
@@ -56,8 +50,8 @@ func main() {
 	}
 	fmt.Println()
 
-	// 2. Test Goroutine Nanopayments Shopper
-	fmt.Println("🏷️ 2. Testing Goroutine x402 Nanopayments Rate Shopper...")
+	// 2. Test parallel quote simulation
+	fmt.Println("🏷️ 2. Testing parallel quote simulation...")
 	shopper := nanopay.NewShopper()
 	shopResult := shopper.ShopRates("USDC/EURC")
 	fmt.Printf("   ✅ Providers Checked: %d\n", shopResult.ProvidersChecked)

@@ -30,21 +30,21 @@ type RealtimePostgresPayload struct {
 }
 
 type RealtimeClient struct {
-	supabaseURL string
-	supabaseKey string
-	store       *Store
-	conn        *websocket.Conn
-	mu          sync.Mutex
-	msgSeq      uint64
-	stopChan    chan struct{}
+	supabaseURL    string
+	publishableKey string
+	store          *Store
+	conn           *websocket.Conn
+	mu             sync.Mutex
+	msgSeq         uint64
+	stopChan       chan struct{}
 }
 
-func NewRealtimeClient(supabaseURL, supabaseKey string, store *Store) *RealtimeClient {
+func NewRealtimeClient(supabaseURL, publishableKey string, store *Store) *RealtimeClient {
 	return &RealtimeClient{
-		supabaseURL: supabaseURL,
-		supabaseKey: supabaseKey,
-		store:       store,
-		stopChan:    make(chan struct{}),
+		supabaseURL:    supabaseURL,
+		publishableKey: publishableKey,
+		store:          store,
+		stopChan:       make(chan struct{}),
 	}
 }
 
@@ -61,7 +61,10 @@ func (rc *RealtimeClient) buildWssURL() (string, error) {
 
 	host := parsed.Host
 	wssPath := fmt.Sprintf("%s://%s/realtime/v1/websocket", scheme, host)
-	return fmt.Sprintf("%s?apikey=%s&vsn=1.0.0", wssPath, rc.supabaseKey), nil
+	query := url.Values{}
+	query.Set("apikey", rc.publishableKey)
+	query.Set("vsn", "1.0.0")
+	return wssPath + "?" + query.Encode(), nil
 }
 
 func (rc *RealtimeClient) nextRef() string {
@@ -70,14 +73,14 @@ func (rc *RealtimeClient) nextRef() string {
 }
 
 func (rc *RealtimeClient) Start(ctx context.Context) {
-	if rc.supabaseURL == "" || rc.supabaseKey == "" {
-		log.Println("[Realtime] Supabase URL or Anon Key missing. Realtime WebSocket disabled.")
+	if rc.supabaseURL == "" || rc.publishableKey == "" {
+		log.Println("[Realtime] Supabase URL or publishable key missing. Realtime WebSocket disabled.")
 		return
 	}
 
 	wssURL, err := rc.buildWssURL()
 	if err != nil {
-		log.Printf("[Realtime] Error building WebSocket URL: %v", err)
+		log.Println("[Realtime] Invalid Supabase URL; Realtime WebSocket disabled")
 		return
 	}
 
@@ -96,14 +99,14 @@ func (rc *RealtimeClient) reconnectLoop(ctx context.Context, wssURL string) {
 		default:
 		}
 
-		log.Printf("[Realtime] Connecting to Supabase Realtime WebSocket (%s)...", rc.supabaseURL)
-		
+		log.Printf("[Realtime] Connecting to configured Supabase Realtime endpoint")
+
 		headers := http.Header{}
 		headers.Set("User-Agent", "Rova-Agent-Go/1.1 (Supabase Realtime)")
 
 		conn, _, err := websocket.DefaultDialer.DialContext(ctx, wssURL, headers)
 		if err != nil {
-			log.Printf("[Realtime] WebSocket dial error: %v. Retrying in %v...", err, backoff)
+			log.Printf("[Realtime] WebSocket connection failed. Retrying in %v...", backoff)
 			time.Sleep(backoff)
 			if backoff < 30*time.Second {
 				backoff *= 2
@@ -125,10 +128,6 @@ func (rc *RealtimeClient) reconnectLoop(ctx context.Context, wssURL string) {
 			continue
 		}
 
-		// 2. Initial state sync from Supabase PostgREST
-		rc.store.syncInitialState()
-
-		// 3. Start Heartbeat & Read Loops
 		heartbeatStop := make(chan struct{})
 		go rc.heartbeatLoop(heartbeatStop)
 
@@ -294,7 +293,7 @@ func (rc *RealtimeClient) handleRuleChange(payload RealtimePostgresPayload) {
 		SourceChannel:       d.SourceChannel,
 	}
 
-	log.Printf("⚡ [Realtime Event] Rule %s (%s): %s %.4f -> %s %.2f", rule.ID, payload.Type, rule.Pair, rule.TriggerValue, rule.RecipientLabel, rule.Amount)
+	log.Printf("[Realtime Event] Rule %s updated (%s)", rule.ID, payload.Type)
 	rc.store.UpsertRuleFromRealtime(rule)
 }
 
@@ -338,7 +337,7 @@ func (rc *RealtimeClient) handleStandingIntentChange(payload RealtimePostgresPay
 		SourceChannel:    d.SourceChannel,
 	}
 
-	log.Printf("⚡ [Realtime Event] Standing Intent %s (%s): \"%s\" (Status: %s)", intent.ID, payload.Type, intent.IntentText, intent.Status)
+	log.Printf("[Realtime Event] Standing intent %s updated (%s, status %s)", intent.ID, payload.Type, intent.Status)
 	rc.store.UpsertStandingIntentFromRealtime(intent)
 }
 
