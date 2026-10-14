@@ -1,6 +1,8 @@
 # ⚡ Rova Agent Go Engine (`rova-agent-go`)
 
-High-performance, 24/7 autonomous backend daemon & native WhatsApp bot engine for **Rova Agentic Economy**, built in **Go (Golang)** with `go-ethereum` and `whatsmeow`.
+High-performance backend daemon and native WhatsApp bot engine for **Rova Agentic Economy**, built in **Go (Golang)** with `go-ethereum` and `whatsmeow`.
+
+> **Release posture:** Rova is testnet-only. Transaction execution, autonomous execution, and WhatsApp execution are disabled by default and require separate server-side gates. This repository does not authorize a mainnet deployment.
 
 ---
 
@@ -149,19 +151,45 @@ go run ./cmd/server
 
 ---
 
-## 🔑 Environment Variables (`.env.local` / `.env`)
+## 🔑 Runtime Configuration
+
+`pkg/config/config.go` is the engine's typed configuration boundary. It combines non-secret defaults from `config.yaml` with credentials and deployment-specific values supplied by the process environment. Production secrets belong in the hosting platform's secret manager, not in TypeScript/Go source, YAML, committed `.env` files, logs, or chat.
+
+Copy `.env.example` only for local development. Every `.env` variant except `.env.example` is ignored by Git.
 
 ```env
-# Server & Environment
+# Bind locally unless a protected reverse proxy is configured
+ROVA_ENGINE_BIND=127.0.0.1
 PORT=8080
-MOCK_MODE=false
+ROVA_ENGINE_API_TOKEN=
+
+# Independent execution gates; keep false outside an approved testnet rehearsal
+ROVA_EXECUTION_ENABLED=false
+ROVA_AUTONOMOUS_EXECUTION_ENABLED=false
+ROVA_WHATSAPP_EXECUTION_ENABLED=false
+ROVA_MAX_AUTONOMOUS_AMOUNT_USDC=100
+ROVA_MAX_WHATSAPP_AMOUNT_USDC=100
 
 # Circle Developer-Controlled Wallets
-CIRCLE_API_KEY=TEST_API_KEY:...
-CIRCLE_ENTITY_SECRET=3a9f8b1c4e2d... (64 hex characters)
-CIRCLE_WALLET_ID=your_circle_wallet_id
+CIRCLE_API_KEY=
+CIRCLE_ENTITY_SECRET=
+CIRCLE_WALLET_ID=
 
-# Arc Blockchain Configuration
+# Server-only persistence
+SUPABASE_URL=
+SUPABASE_SECRET_KEY=
+
+# Arc testnet configuration
 ARC_RPC_URL=https://rpc.testnet.arc.network
-ROVA_EXECUTION_LOG_ADDRESS=0x58d1e3e11C7a93cb26C371B115f2710aF68d427a
+NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS=0x58d1e3e11C7a93cb26C371B115f2710aF68d427a
+
+# Direct signing is optional and discouraged; prefer Circle custody
+ROVA_AGENT_PRIVATE_KEY=
 ```
+
+## Security Requirements
+
+- Treat any private key previously committed to repository history as compromised. Rotate the account and move funds before any further use; deleting the current source file does not erase Git history.
+- Never reuse `ROVA_SESSION_SECRET`, `ROVA_ENGINE_API_TOKEN`, `ROVA_SIDECAR_TOKEN`, deployer keys, Circle credentials, or Supabase credentials across development, staging, and production.
+- Do not expose server-only variables through `NEXT_PUBLIC_*`. The execution-log address is public contract metadata; credentials are not.
+- Keep all execution gates `false` until the exact testnet action, amount limit, operator, and rollback procedure are approved.

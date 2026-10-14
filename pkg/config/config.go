@@ -159,7 +159,7 @@ func LoadConfig() *Config {
 		WhatsAppAPIToken:            os.Getenv("WHATSAPP_API_TOKEN"),
 		WhatsAppPhoneNumberID:       os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
 		SupabaseURL:                 getEnv("NEXT_PUBLIC_SUPABASE_URL", os.Getenv("SUPABASE_URL")),
-		SupabaseServiceRoleKey:      os.Getenv("SUPABASE_SERVICE_ROLE_KEY"),
+		SupabaseServiceRoleKey:      getEnv("SUPABASE_SECRET_KEY", os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
 		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "smart_contract")),
 		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "sidecar_uds")),
@@ -178,7 +178,7 @@ func (c *Config) ValidateEngineServer() error {
 
 func (c *Config) ValidateDatabaseAccess() error {
 	if c.SupabaseURL == "" || c.SupabaseServiceRoleKey == "" {
-		return fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for the engine")
+		return fmt.Errorf("SUPABASE_URL and SUPABASE_SECRET_KEY are required for the engine")
 	}
 	return nil
 }

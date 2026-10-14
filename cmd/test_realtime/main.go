@@ -51,7 +51,7 @@ func main() {
 
 	cfg := config.LoadConfig()
 	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRoleKey == "" {
-		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing!")
+		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_SECRET_KEY is missing!")
 	}
 
 	fmt.Printf("✔ Loaded Supabase URL: %s\n", cfg.SupabaseURL)
