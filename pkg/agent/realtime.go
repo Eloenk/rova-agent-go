@@ -281,6 +281,7 @@ func (rc *RealtimeClient) handleRuleChange(payload RealtimePostgresPayload) {
 	rule := &AgentRule{
 		ID:                  d.ID,
 		Status:              d.Status,
+		OwnerEmail:          d.OwnerEmail,
 		RecipientLabel:      d.RecipientLabel,
 		RecipientIdentifier: d.RecipientIdentifier,
 		Amount:              d.Amount,
@@ -325,6 +326,7 @@ func (rc *RealtimeClient) handleStandingIntentChange(payload RealtimePostgresPay
 		ID:               d.ID,
 		CreatedAt:        t,
 		Status:           d.Status,
+		OwnerEmail:       d.OwnerEmail,
 		IntentText:       d.IntentText,
 		Plan:             d.Plan,
 		Trigger:          d.Trigger,

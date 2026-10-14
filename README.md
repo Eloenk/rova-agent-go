@@ -8,7 +8,7 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 
 ## 🌟 Architectural Overview
 
-`rova-agent-go` is the decoupled backend engine for Rova. It handles policy-gated rate watching, parallel quote simulation, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction.
+`rova-agent-go` is the decoupled backend engine for Rova. It handles policy-gated rate watching, parallel quote simulation, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction. Autonomous work is claimed atomically in Supabase and remains fail-closed if the database is unavailable.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -75,8 +75,14 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 * Simulated quotes are marked non-executable and cannot trigger transfers. Live x402 verification and settlement remain an explicit future integration gate.
 
 ### 6. Arc Smart Contract Integration (`pkg/chain/`)
-* Native `go-ethereum` (`ethclient`) binding supporting EIP-1559 transaction signing on Arc Testnet (Chain ID `5042002`).
+* Native `go-ethereum` (`ethclient`) binding for Arc Testnet reads and explicitly gated direct transaction signing (Chain ID `5042002`).
 * Direct ABI contract calls to `RovaExecutionLog.sol` for on-chain audit trail recording.
+
+### 7. Durable Autonomous Execution (`pkg/agent/`)
+* Supabase RPC claims atomically move an active rule or standing intent to `ready_to_execute`, preventing two engine instances from executing the same record.
+* Claims succeed only for managed-custody records whose `owner_email`, `source_wallet`, and `users.circle_wallet_address` mapping agree.
+* The engine executes the exact row returned by the claim, writes the transaction receipt before re-arming or finalizing the policy, and leaves uncertain failures paused for operator reconciliation.
+* Realtime transfer events are evaluation signals only; a fresh balance read and database claim are still required before execution.
 
 ---
 
@@ -147,6 +153,8 @@ go run ./cmd/gen-secret -pubkey "<paste-circle-developer-pubkey-here>"
 
 ### C. Run the Backend HTTP API Server
 
+Apply the web repository's complete `schema.sql` to the same Supabase project first. The engine requires the service-role-only `claim_agent_rule` and `claim_standing_intent` functions and will not fall back to stale cached rules when persistence is unavailable.
+
 ```bash
 go run ./cmd/server
 ```
@@ -215,3 +223,4 @@ ROVA_AGENT_PRIVATE_KEY=
 - Never reuse `ROVA_SESSION_SECRET`, `ROVA_ENGINE_API_TOKEN`, `ROVA_SIDECAR_TOKEN`, deployer keys, Circle credentials, or Supabase credentials across development, staging, and production.
 - Do not expose server-only variables through `NEXT_PUBLIC_*`. The execution-log address is public contract metadata; credentials are not.
 - Keep all execution gates `false` until the exact testnet action, amount limit, operator, and rollback procedure are approved.
+- An item left in `ready_to_execute` after a transaction or persistence error is intentionally paused. Reconcile its Circle and Arc transaction history before changing its status; never blindly re-arm it.

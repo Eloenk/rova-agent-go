@@ -3,7 +3,9 @@ package chain
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -11,6 +13,7 @@ import (
 
 type LogExecutionOpts struct {
 	RuleID          string
+	SourceWallet    string
 	Recipient       string
 	AmountUsdc      float64
 	RateAtExecution float64
@@ -20,32 +23,53 @@ type LogExecutionOpts struct {
 func (c *ChainClient) LogExecutionOnchain(ctx context.Context, opts LogExecutionOpts) (string, error) {
 	contractAddr := c.Config.ExecutionLogContractAddress
 	recipientAddr := opts.Recipient
+	if !common.IsHexAddress(contractAddr) || !common.IsHexAddress(recipientAddr) {
+		return "", fmt.Errorf("execution-log contract and recipient must be valid EVM addresses")
+	}
+	amountInt, err := c.scaledUSDCAmount(opts.AmountUsdc)
+	if err != nil {
+		return "", err
+	}
+	if math.IsNaN(opts.RateAtExecution) || math.IsInf(opts.RateAtExecution, 0) || opts.RateAtExecution <= 0 || opts.RateAtExecution > 1_000_000 {
+		return "", fmt.Errorf("execution rate is invalid")
+	}
+	memo := strings.TrimSpace(opts.Memo)
+	if memo == "" || len([]byte(memo)) > 256 {
+		return "", fmt.Errorf("execution memo must contain 1 to 256 bytes")
+	}
 
 	ruleHash := crypto.Keccak256([]byte(opts.RuleID))
 	var ruleIDBytes32 [32]byte
 	copy(ruleIDBytes32[:], ruleHash)
 
-	amountUsdc6 := fmt.Sprintf("%d", int64(opts.AmountUsdc*1e6))
-	rate1e6 := fmt.Sprintf("%d", int64(opts.RateAtExecution*1e6))
+	amountUsdc6 := fmt.Sprintf("%d", amountInt)
+	rateInt := int64(math.Round(opts.RateAtExecution * 1e6))
+	rate1e6 := fmt.Sprintf("%d", rateInt)
 
 	// Mode: Circle Developer Controlled Wallets
 	if c.Config.ExecutionMode == "circle" {
+		if !common.IsHexAddress(opts.SourceWallet) {
+			return "", fmt.Errorf("source wallet must be a valid EVM address")
+		}
 		params := []interface{}{
 			fmt.Sprintf("0x%x", ruleIDBytes32),
 			recipientAddr,
 			amountUsdc6,
 			rate1e6,
-			opts.Memo,
+			memo,
 		}
-		return c.CircleClient.ExecuteContract(ctx, contractAddr, "logExecution(bytes32,address,uint256,uint256,string)", params)
+		return c.CircleClient.ExecuteContractWithWallet(ctx, opts.SourceWallet, contractAddr, "logExecution(bytes32,address,uint256,uint256,string)", params)
 	}
 
 	// Mode: Direct RPC Execution
+	if opts.SourceWallet != "" && (!common.IsHexAddress(opts.SourceWallet) || common.HexToAddress(opts.SourceWallet) != c.Address) {
+		return "", fmt.Errorf("source wallet does not match the configured direct-signing key")
+	}
 	contractCommonAddr := common.HexToAddress(contractAddr)
 	recipientCommonAddr := common.HexToAddress(recipientAddr)
 
-	amountBig := big.NewInt(int64(opts.AmountUsdc * 1e6))
-	rateBig := big.NewInt(int64(opts.RateAtExecution * 1e6))
+	amountBig := big.NewInt(amountInt)
+	rateBig := big.NewInt(rateInt)
 
 	methodID := crypto.Keccak256([]byte("logExecution(bytes32,address,uint256,uint256,string)"))[:4]
 
@@ -56,7 +80,7 @@ func (c *ChainClient) LogExecutionOnchain(ctx context.Context, opts LogExecution
 
 	memoOffset := common.LeftPadBytes(big.NewInt(160).Bytes(), 32)
 
-	memoBytes := []byte(opts.Memo)
+	memoBytes := []byte(memo)
 	memoLen := common.LeftPadBytes(big.NewInt(int64(len(memoBytes))).Bytes(), 32)
 
 	memoPaddedLen := ((len(memoBytes) + 31) / 32) * 32
