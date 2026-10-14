@@ -115,7 +115,7 @@ func getOnchainBalance(rpcURL, tokenAddress, walletAddress string) (float64, err
 	rawInt := new(big.Int)
 	rawInt.SetString(hexStr, 16)
 
-	// USDC/EURC have 6 decimals on Arc Testnet
+	// The USDC/EURC ERC-20 interfaces use 6 decimals on Arc.
 	balFloat := new(big.Float).SetInt(rawInt)
 	decimals := new(big.Float).SetFloat64(1000000.0)
 	result := new(big.Float).Quo(balFloat, decimals)
@@ -180,9 +180,9 @@ func main() {
 		fmt.Println("   ⚠️ Supabase environment variables not configured.")
 	}
 
-	// 2. Query Onchain Balances directly via Arc Testnet RPC
+	// 2. Query onchain balances directly via the configured Arc RPC.
 	if circleWallet != "" {
-		fmt.Println("\n💰 2. Querying Arc Testnet RPC Onchain Balances...")
+		fmt.Println("\n💰 2. Querying Arc Mainnet RPC Onchain Balances...")
 
 		usdcBal, errUsdc := getOnchainBalance(cfg.ArcRPCURL, cfg.USDCContractAddress, circleWallet)
 		if errUsdc == nil {

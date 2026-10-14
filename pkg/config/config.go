@@ -14,6 +14,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	ArcMainnetChainID          int64  = 5042
+	ArcMainnetTokenMessengerV2 string = "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d"
+)
+
 type YAMLConfig struct {
 	Execution struct {
 		Mode string `yaml:"mode"`
@@ -117,14 +122,14 @@ func LoadConfig() *Config {
 
 	rpcURLs := y.Arc.RPCURLs
 	if len(rpcURLs) == 0 {
-		defaultRPC := getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://arc-testnet.drpc.org"))
-		rpcURLs = []string{defaultRPC, "https://rpc.testnet.arc.network"}
+		defaultRPC := getEnv("ARC_RPC_URL", fallback(y.Arc.RPCURL, "https://rpc.mainnet.arc.io"))
+		rpcURLs = []string{defaultRPC, "https://rpc.drpc.mainnet.arc.io"}
 	}
 
 	wssURLs := y.Arc.WSSURLs
 	if len(wssURLs) == 0 {
-		defaultWSS := getEnv("ARC_WSS_URL", "wss://arc-testnet.drpc.org/ws")
-		wssURLs = []string{defaultWSS, "wss://wss.testnet.arc.network"}
+		defaultWSS := getEnv("ARC_WSS_URL", "wss://rpc.mainnet.arc.io")
+		wssURLs = []string{defaultWSS, "wss://rpc.drpc.mainnet.arc.io"}
 	}
 
 	balanceMode := getEnv("ROVA_BALANCE_MODE", fallback(y.Balance.Mode, "wss"))
@@ -155,7 +160,7 @@ func LoadConfig() *Config {
 		ArcWSSURLs:                  wssURLs,
 		BalanceMode:                 balanceMode,
 		BalancePollInterval:         pollInterval,
-		ChainID:                     fallbackInt(y.Arc.ChainID, 5042002),
+		ChainID:                     fallbackInt(y.Arc.ChainID, ArcMainnetChainID),
 		PrivateKey:                  os.Getenv("ROVA_AGENT_PRIVATE_KEY"),
 		ExecutionLogContractAddress: getEnv("NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS", y.Arc.ExecutionLogAddress),
 		USDCContractAddress:         fallback(y.Arc.USDCAddress, os.Getenv("ARC_USDC_ADDRESS")),
@@ -169,12 +174,12 @@ func LoadConfig() *Config {
 		SupabaseSecretKey:           os.Getenv("SUPABASE_SECRET_KEY"),
 		SupabasePublishableKey:      os.Getenv("SUPABASE_PUBLISHABLE_KEY"),
 		AppURL:                      getEnv("ROVA_APP_URL", getEnv("NEXT_PUBLIC_APP_URL", fallback(y.App.URL, "https://rova-web.vercel.app"))),
-		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "smart_contract")),
+		VaultStrategy:               getEnv("ROVA_VAULT_STRATEGY", fallback(y.Vault.Strategy, "disabled")),
 		SavingsVaultAddress:         getEnv("ROVA_SAVINGS_VAULT_ADDRESS", y.Vault.Address),
-		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "sidecar_uds")),
+		SwapStrategy:                getEnv("ROVA_SWAP_STRATEGY", fallback(y.Swap.Strategy, "disabled")),
 		SwapSidecarSocket:           getEnv("ROVA_SWAP_SOCKET", fallback(y.Swap.SidecarSocket, "/tmp/rova-swap.sock")),
 		SwapSidecarToken:            os.Getenv("ROVA_SIDECAR_TOKEN"),
-		SwapRouterAddress:           getEnv("NEXT_PUBLIC_ROVA_SWAP_ROUTER_ADDRESS", fallback(y.Swap.RouterAddress, "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA")),
+		SwapRouterAddress:           getEnv("NEXT_PUBLIC_ROVA_SWAP_ROUTER_ADDRESS", y.Swap.RouterAddress),
 	}
 }
 
@@ -252,6 +257,9 @@ func (c *Config) ValidateExecutionConfig() error {
 	}
 	if c.ExecutionMode != "circle" && c.ExecutionMode != "direct" {
 		return fmt.Errorf("execution mode must be circle or direct")
+	}
+	if c.ChainID == ArcMainnetChainID && (c.ExecutionEnabled || c.AutonomousExecutionEnabled || c.WhatsAppExecutionEnabled) {
+		return fmt.Errorf("Arc mainnet transaction execution is disabled in this release; keep all ROVA execution gates false")
 	}
 	if !c.ExecutionEnabled {
 		return nil

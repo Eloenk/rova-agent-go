@@ -1,14 +1,14 @@
 # ⚡ Rova Agent Go Engine (`rova-agent-go`)
 
-High-performance backend daemon and native WhatsApp bot engine for **Rova Agentic Economy**, built in **Go (Golang)** with `go-ethereum` and `whatsmeow`.
+Backend monitoring, planning, and native WhatsApp engine for **Rova Agentic Economy**, built in **Go (Golang)** with `go-ethereum` and `whatsmeow`.
 
-> **Release posture:** Rova is testnet-only. Transaction execution, autonomous execution, and WhatsApp execution are disabled by default and require separate server-side gates. This repository does not authorize a mainnet deployment.
+> **Release posture:** Rova targets Arc Mainnet for read-only balances, monitoring, and non-executable planning. Transaction execution, autonomous execution, WhatsApp execution, vaults, and swaps are hard-disabled for this release. The owner may deploy only the non-custodial `RovaExecutionLog` contract from the web repository.
 
 ---
 
 ## 🌟 Architectural Overview
 
-`rova-agent-go` is the decoupled backend engine for Rova. It handles policy-gated rate watching, parallel quote simulation, server-side Circle Programmable Wallet execution, deterministic AI failsafe intent parsing, and native WhatsApp chat interaction. Autonomous work is claimed atomically in Supabase and remains fail-closed if the database is unavailable.
+`rova-agent-go` is the decoupled backend engine for Rova. It handles rate watching, parallel non-executable quote simulation, deterministic AI failsafe intent parsing, Arc Mainnet balance reads, and native WhatsApp chat interaction. Dormant execution code remains fail-closed at configuration and transaction boundaries.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -38,7 +38,7 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 └────────────────────────────────────────┼────────────────────────────────────┘
                                          ▼
                    ┌──────────────────────────────────────────┐
-                   │    Arc Testnet (Chain ID 5042002)        │
+                   │      Arc Mainnet (Chain ID 5042)         │
                    │    - USDC / EURC Contracts               │
                    │    - RovaExecutionLog.sol                │
                    └──────────────────────────────────────────┘
@@ -59,26 +59,25 @@ High-performance backend daemon and native WhatsApp bot engine for **Rova Agenti
 * **Command Dispatcher**:
   * `balance` / `wallet`: Displays Circle Programmable Wallet address & custody details.
   * `status` / `rules`: Displays active rate watchers on Arc.
-  * `send <amount> USDC to <address>`: Executes USDC transfers on Arc and returns ArcScan link.
-  * `swap <amount> USDC to EURC`: Triggers StableFX atomic swaps.
-  * `bridge <amount> USDC from <chain> to Arc`: Triggers CCTP V2 cross-chain bridging.
+  * Fund-moving commands return a disabled-state response in the mainnet release.
 
 ### 3. Circle Entity Secret Generator CLI (`cmd/gen-secret/` & `pkg/circle/secret.go`)
 * **32-Byte Secret Key Generation**: Uses `crypto/rand` to generate cryptographically secure 64-character hex strings for `CIRCLE_ENTITY_SECRET`.
 * **RSA-OAEP SHA-256 Ciphertext Encryption**: Takes Circle Console's Developer Public Key and outputs the exact base64 ciphertext needed to register entity secrets in Circle Console.
 
 ### 4. Circle Developer-Controlled Wallets SDK Client (`pkg/circle/client.go`)
-* Direct HTTP client handling Circle's Developer-Controlled Wallets API for transfers, contract executions, and HSM transaction signing.
+* Retained integration client with all Arc Mainnet transaction methods blocked for this release.
 
 ### 5. Parallel Quote Simulation (`pkg/nanopay/shop.go`)
 * Compares three simulated provider quotes concurrently using Go goroutines (`sync.WaitGroup`).
 * Simulated quotes are marked non-executable and cannot trigger transfers. Live x402 verification and settlement remain an explicit future integration gate.
 
 ### 6. Arc Smart Contract Integration (`pkg/chain/`)
-* Native `go-ethereum` (`ethclient`) binding for Arc Testnet reads and explicitly gated direct transaction signing (Chain ID `5042002`).
-* Direct ABI contract calls to `RovaExecutionLog.sol` for on-chain audit trail recording.
+* Native `go-ethereum` (`ethclient`) binding for Arc Mainnet reads (Chain ID `5042`).
+* Direct and Circle-backed Arc Mainnet transaction submission is rejected in code.
 
-### 7. Durable Autonomous Execution (`pkg/agent/`)
+### 7. Dormant Policy Engine (`pkg/agent/`)
+The policy engine is preserved for later review, but cannot execute on Arc Mainnet in this release.
 * Supabase RPC claims atomically move an active rule or standing intent to `ready_to_execute`, preventing two engine instances from executing the same record.
 * Claims succeed only for managed-custody records whose `owner_email`, `source_wallet`, and `users.circle_wallet_address` mapping agree.
 * The engine executes the exact row returned by the claim, writes the transaction receipt before re-arming or finalizing the policy, and leaves uncertain failures paused for operator reconciliation.
@@ -100,7 +99,7 @@ rova-agent-go/
 ├── pkg/
 │   ├── agent/             # 24/7 Ticker Watcher & State Store
 │   ├── ai/                # Intent Parsing & Failsafe Greeting Fast-Path
-│   ├── chain/             # go-ethereum Arc Testnet Client & ERC-20 Bindings
+│   ├── chain/             # go-ethereum Arc Mainnet Read Client & ERC-20 Bindings
 │   ├── circle/            # Circle Developer-Controlled Wallets & Entity Secret Crypto
 │   ├── config/            # YAML & Environment Configuration Loader
 │   ├── nanopay/           # Non-executable parallel quote simulation
@@ -161,7 +160,7 @@ go run ./cmd/server
 
 ### D. Run the Optional Swap Sidecar
 
-The sidecar reads runtime values only through `sidecar/config.js`, binds to a Unix socket by default (or loopback TCP on Windows), and requires bearer authentication. Install with scripts disabled, keep the execution gate off until an approved testnet rehearsal, then start it separately:
+The sidecar is retained only as an authenticated compatibility interface. Its quote and execution endpoints return `410`, and it rejects startup if execution is enabled. It is not required for the mainnet submission:
 
 ```bash
 cd sidecar
@@ -184,7 +183,7 @@ ROVA_ENGINE_BIND=127.0.0.1
 PORT=8080
 ROVA_ENGINE_API_TOKEN=
 
-# Independent execution gates; keep false outside an approved testnet rehearsal
+# Independent execution gates; all must remain false for the mainnet release
 ROVA_EXECUTION_ENABLED=false
 ROVA_AUTONOMOUS_EXECUTION_ENABLED=false
 ROVA_WHATSAPP_EXECUTION_ENABLED=false
@@ -206,14 +205,19 @@ SUPABASE_PUBLISHABLE_KEY=
 ROVA_SIDECAR_TOKEN=
 ROVA_SWAP_SOCKET=/tmp/rova-swap.sock
 SWAP_SIDECAR_PORT=
-ARC_CHAIN=Arc_Testnet
-ROVA_SAVINGS_VAULT_ADDRESS=0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB
+ARC_CHAIN=Arc
+ROVA_VAULT_STRATEGY=disabled
+ROVA_SAVINGS_VAULT_ADDRESS=
+ROVA_SWAP_STRATEGY=disabled
+NEXT_PUBLIC_ROVA_SWAP_ROUTER_ADDRESS=
 
-# Arc testnet configuration
-ARC_RPC_URL=https://rpc.testnet.arc.network
-NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS=0x58d1e3e11C7a93cb26C371B115f2710aF68d427a
+# Arc mainnet configuration
+ARC_RPC_URL=https://rpc.mainnet.arc.io
+ARC_WSS_URL=wss://rpc.mainnet.arc.io
+# Populate only after owner deployment and explorer verification
+NEXT_PUBLIC_ROVA_EXECUTION_LOG_ADDRESS=
 
-# Direct signing is optional and discouraged; prefer Circle custody
+# Runtime direct signing is prohibited for this release; leave blank
 ROVA_AGENT_PRIVATE_KEY=
 ```
 
@@ -222,5 +226,5 @@ ROVA_AGENT_PRIVATE_KEY=
 - Treat any private key previously committed to repository history as compromised. Rotate the account and move funds before any further use; deleting the current source file does not erase Git history.
 - Never reuse `ROVA_SESSION_SECRET`, `ROVA_ENGINE_API_TOKEN`, `ROVA_SIDECAR_TOKEN`, deployer keys, Circle credentials, or Supabase credentials across development, staging, and production.
 - Do not expose server-only variables through `NEXT_PUBLIC_*`. The execution-log address is public contract metadata; credentials are not.
-- Keep all execution gates `false` until the exact testnet action, amount limit, operator, and rollback procedure are approved.
+- Keep all execution gates `false`; this release rejects Arc Mainnet execution even if a gate is enabled accidentally.
 - An item left in `ready_to_execute` after a transaction or persistence error is intentionally paused. Reconcile its Circle and Arc transaction history before changing its status; never blindly re-arm it.

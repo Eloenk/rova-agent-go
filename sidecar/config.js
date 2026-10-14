@@ -5,15 +5,6 @@ function readEnv(name, fallback = '') {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback;
 }
 
-function readPositiveNumber(name, fallback) {
-  const raw = readEnv(name, String(fallback));
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${name} must be a positive number`);
-  }
-  return value;
-}
-
 function readOptionalPort(name) {
   const raw = readEnv(name);
   if (!raw) return null;
@@ -34,12 +25,13 @@ if (socketPath.includes('\0') || !path.isAbsolute(socketPath)) {
   throw new Error('ROVA_SWAP_SOCKET must be an absolute path');
 }
 
+const executionEnabled = readEnv('ROVA_EXECUTION_ENABLED', 'false').toLowerCase() === 'true';
+if (executionEnabled) {
+  throw new Error('Swap execution is disabled in the Arc mainnet release');
+}
+
 const config = Object.freeze({
-  arcChain: readEnv('ARC_CHAIN', readEnv('NEXT_PUBLIC_ARC_CHAIN', 'Arc_Testnet')),
-  circleAPIKey: readEnv('CIRCLE_API_KEY'),
-  circleEntitySecret: readEnv('CIRCLE_ENTITY_SECRET'),
-  executionEnabled: readEnv('ROVA_EXECUTION_ENABLED', 'false').toLowerCase() === 'true',
-  maxSwapAmount: readPositiveNumber('ROVA_MAX_AUTONOMOUS_AMOUNT_USDC', 100),
+  executionEnabled,
   sidecarToken,
   socketPath,
   tcpPort: readOptionalPort('SWAP_SIDECAR_PORT'),

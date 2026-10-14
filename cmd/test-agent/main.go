@@ -74,7 +74,7 @@ func main() {
 			fmt.Printf("   ⚠️ Transfer Simulation Error: %v\n", err)
 		} else {
 			fmt.Printf("   ✅ Simulated Tx Hash: %s\n", txHash)
-			fmt.Printf("   🔗 ArcScan URL:       https://testnet.arcscan.app/tx/%s\n", txHash)
+			fmt.Printf("   🔗 Arc explorer URL:  https://explorer.arc.io/tx/%s\n", txHash)
 		}
 	}
 

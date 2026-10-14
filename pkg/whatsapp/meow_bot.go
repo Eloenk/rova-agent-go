@@ -457,11 +457,11 @@ func (b *MeowBot) executePendingAction(ctx context.Context, jid types.JID, actio
 		return
 	}
 
-	b.replyText(jid, fmt.Sprintf("✅ *Rova Action Complete*\n\n• *Action*: %s\n• *Tx Hash*: `%s`\n\nhttps://testnet.arcscan.app/tx/%s", strings.ToUpper(action.Action), txHash, txHash))
+	b.replyText(jid, fmt.Sprintf("✅ *Rova Action Complete*\n\n• *Action*: %s\n• *Tx Hash*: `%s`\n\nhttps://explorer.arc.io/tx/%s", strings.ToUpper(action.Action), txHash, txHash))
 }
 
 func (b *MeowBot) executionAvailable() bool {
-	return b.Config != nil && b.Config.ExecutionEnabled && b.Config.WhatsAppExecutionEnabled
+	return b.Config != nil && b.Config.ChainID != config.ArcMainnetChainID && b.Config.ExecutionEnabled && b.Config.WhatsAppExecutionEnabled
 }
 
 func isFundMovingAction(action string) bool {
@@ -576,9 +576,9 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 				"✅ *WhatsApp Line Linked Successfully!*\n\n"+
 					"• *Account*: %s\n"+
 					"• *Phone*: %s\n"+
-					"• *Network*: Arc Testnet\n\n"+
-					"You can now manage your wallet and execute transactions directly in this chat!\n\n"+
-					"Type *\"balance\"*, *\"status\"*, or *\"send 10 USDC to 0x...\"* to start.",
+					"• *Network*: Arc Mainnet\n\n"+
+					"You can now inspect your wallet and prepare transaction plans in this chat.\n\n"+
+					"Type *\"balance\"* or *\"status\"* to start.",
 				userEmail, displayPhone,
 			)
 			b.replyText(jid, reply)
@@ -715,8 +715,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"💰 *Your Balances*\n\n"+
 				"• *USDC*: %.2f\n"+
 				"• *EURC*: %.2f\n\n"+
-				"🌐 *Network*: Arc Testnet\n"+
-				"🔗 *Explorer*: https://testnet.arcscan.app/address/%s",
+				"🌐 *Network*: Arc Mainnet\n"+
+				"🔗 *Explorer*: https://explorer.arc.io/address/%s",
 			usdcBal, eurcBal, boundWallet,
 		)
 		b.replyText(jid, reply)
@@ -925,7 +925,7 @@ func (b *MeowBot) SendMessageToPhone(phone, text string) error {
 func (b *MeowBot) SendExecutionReport(phone string, opts agent.NotificationOpts) error {
 	var text strings.Builder
 	text.WriteString("🤖 *Rova Agent Execution Report (Go Engine)*\n\n")
-	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
+	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc\n"))
 	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
 	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
 	text.WriteString(fmt.Sprintf("🏷️ *Quote Comparison*: Selected *%s* out of %d provider quotes.\n", opts.BestProvider, opts.ProvidersChecked))

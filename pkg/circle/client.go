@@ -399,7 +399,7 @@ func (c *CircleClient) BridgeCCTPWithWallet(ctx context.Context, walletID string
 	}
 	params := []interface{}{domain, recipientBytes32, fmt.Sprintf("%d", amountInt), c.Config.USDCContractAddress}
 
-	return c.ExecuteContractWithWallet(ctx, walletID, "0x9f3b8679c73c2Fef8b59B4f3444d4e156fb70AA5", "depositForBurn(uint64,bytes32,uint256,address)", params)
+	return c.ExecuteContractWithWallet(ctx, walletID, config.ArcMainnetTokenMessengerV2, "depositForBurn(uint64,bytes32,uint256,address)", params)
 }
 
 func (c *CircleClient) DepositSavingsVault(ctx context.Context, userWallet string, amount float64) (string, error) {
@@ -519,8 +519,7 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 	}
 
 	if strings.HasPrefix(targetWalletID, "0x") {
-		payload.WalletAddress = targetWalletID
-		payload.Blockchain = "ARC-TESTNET"
+		return "", fmt.Errorf("address-based Circle contract execution is unavailable for the Arc mainnet release")
 	} else {
 		payload.WalletID = targetWalletID
 	}
@@ -531,6 +530,9 @@ func (c *CircleClient) ExecuteContractWithWallet(ctx context.Context, walletID s
 func (c *CircleClient) requireExecutionEnabled() error {
 	if c.Config == nil || !c.Config.ExecutionEnabled {
 		return fmt.Errorf("custodial execution is disabled; set ROVA_EXECUTION_ENABLED=true only after operational approval")
+	}
+	if c.Config.ChainID == config.ArcMainnetChainID {
+		return fmt.Errorf("Arc mainnet custodial execution is disabled in this release")
 	}
 	return nil
 }

@@ -90,6 +90,9 @@ func (c *ChainClient) SignAndSendTx(ctx context.Context, to common.Address, valu
 	if c.Config == nil || !c.Config.ExecutionEnabled {
 		return "", fmt.Errorf("transaction execution is disabled; set ROVA_EXECUTION_ENABLED=true only after operational approval")
 	}
+	if c.Config.ChainID == config.ArcMainnetChainID {
+		return "", fmt.Errorf("Arc mainnet direct execution is disabled in this release")
+	}
 	if c.RPCClient == nil || c.PrivateKey == nil {
 		return "", fmt.Errorf("RPC client and private key are required to sign and send transactions")
 	}
@@ -186,7 +189,7 @@ func (c *ChainClient) GetBalanceEURCWithFailover(ctx context.Context, walletAddr
 func (c *ChainClient) ListenUSDCTransferEvents(ctx context.Context, getTargetWallets func() []string, onTransfer func(toAddress string, amount float64, txHash string)) {
 	wssURLs := c.Config.ArcWSSURLs
 	if len(wssURLs) == 0 {
-		wssURLs = []string{"wss://arc-testnet.drpc.org", "wss://rpc.testnet.arc.network"}
+		wssURLs = []string{"wss://rpc.mainnet.arc.io", "wss://rpc.drpc.mainnet.arc.io"}
 	}
 
 	usdcAddressHex := c.Config.USDCContractAddress

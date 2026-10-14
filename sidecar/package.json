@@ -7,8 +7,6 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@circle-fin/adapter-circle-wallets": "1.8.1",
-    "@circle-fin/swap-kit": "1.7.1",
     "express": "5.3.0"
   }
 }

@@ -48,7 +48,7 @@ func (n *Notifier) SendExecutionReport(toPhone string, opts agent.NotificationOp
 	}
 	var text strings.Builder
 	text.WriteString("🤖 *Rova Agent Execution Report (Whatsmeow Engine)*\n\n")
-	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
+	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc\n"))
 	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
 	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
 	text.WriteString(fmt.Sprintf("🏷️ *Quote Comparison*: Selected *%s* out of %d provider simulations.\n", opts.BestProvider, opts.ProvidersChecked))

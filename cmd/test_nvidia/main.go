@@ -26,7 +26,7 @@ func main() {
 	parser := ai.NewAIParserWithConfig(cfg)
 	testPrompts := []string{
 		"Send 15.5 USDC to 0x33c50a793fd2fa02ed0b54196ab4f1faf7bad046",
-		"Swap 100 USDC to EURC on Arc Testnet",
+		"Plan a 100 USDC to EURC swap on Arc Mainnet",
 		"Bridge 50 USDC from Ethereum to Arc",
 	}
 

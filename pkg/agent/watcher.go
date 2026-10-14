@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"rova-agent-go/pkg/chain"
+	"rova-agent-go/pkg/config"
 	"rova-agent-go/pkg/nanopay"
 )
 
@@ -207,7 +208,7 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 		firedAt := time.Now()
 		newRunCount := intent.RunCount + 1
 		newKnownBalance := balance - saveAmount
-		arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
+		arcScanURL := fmt.Sprintf("https://explorer.arc.io/tx/%s", txHash)
 		memo := fmt.Sprintf("approved savings policy deposited %.2f USDC after a %.2f USDC balance increase", saveAmount, delta)
 		receipt := &ExecutionRecord{
 			OwnerEmail:       intent.OwnerEmail,
@@ -312,7 +313,7 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 		shopResult.BestRate, operator, rule.TriggerValue, shopResult.ProvidersChecked)
 
 	firedAt := time.Now()
-	arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
+	arcScanURL := fmt.Sprintf("https://explorer.arc.io/tx/%s", txHash)
 	receipt := &ExecutionRecord{
 		OwnerEmail:      rule.OwnerEmail,
 		RuleID:          rule.ID,
@@ -362,6 +363,9 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 
 func (w *WatcherEngine) canExecuteAutomatically(amount float64) bool {
 	if w.ChainClient == nil || w.ChainClient.Config == nil || !w.ChainClient.Config.ExecutionEnabled || !w.ChainClient.Config.AutonomousExecutionEnabled {
+		return false
+	}
+	if w.ChainClient.Config.ChainID == config.ArcMainnetChainID {
 		return false
 	}
 	if w.ChainClient.Config.ExecutionMode != "circle" {

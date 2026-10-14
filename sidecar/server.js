@@ -2,7 +2,6 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const config = require('./config');
-const { executeSwap, getSwapQuote } = require('./swapService');
 
 const app = express();
 app.disable('x-powered-by');
@@ -24,50 +23,12 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, status: 'online', mode: config.tcpPort ? 'tcp' : 'uds' });
 });
 
-function validateSwapInput(body, walletRequired) {
-  const { sellCurrency, buyCurrency, walletAddress } = body || {};
-  const amount = Number(body && body.amount);
-  if (!['USDC', 'EURC'].includes(sellCurrency) || !['USDC', 'EURC'].includes(buyCurrency)) {
-    return { error: 'Only USDC and EURC are supported' };
-  }
-  if (sellCurrency === buyCurrency) {
-    return { error: 'sellCurrency and buyCurrency must differ' };
-  }
-  if (!Number.isFinite(amount) || amount <= 0 || amount > config.maxSwapAmount) {
-    return { error: `amount must be greater than zero and no more than ${config.maxSwapAmount}` };
-  }
-  if ((walletRequired || walletAddress) && !/^0x[a-fA-F0-9]{40}$/.test(walletAddress || '')) {
-    return { error: 'A valid walletAddress is required' };
-  }
-  return { value: { sellCurrency, buyCurrency, amount, walletAddress } };
-}
-
-app.post('/api/swap/quote', requireSidecarToken, async (req, res) => {
-  try {
-    const input = validateSwapInput(req.body, true);
-    if (input.error) return res.status(400).json({ ok: false, error: input.error });
-    const quote = await getSwapQuote(input.value);
-    res.json({ ok: true, quote });
-  } catch (err) {
-    console.error('[SwapSidecar] Quote request failed');
-    res.status(502).json({ ok: false, error: 'Quote provider unavailable' });
-  }
+app.post('/api/swap/quote', requireSidecarToken, (req, res) => {
+  res.status(410).json({ ok: false, error: 'Live swap quotes are disabled in the Arc mainnet release' });
 });
 
-app.post('/api/swap', requireSidecarToken, async (req, res) => {
-  try {
-    const input = validateSwapInput(req.body, true);
-    if (input.error) return res.status(400).json({ ok: false, error: input.error });
-    if (!config.executionEnabled) {
-      return res.status(403).json({ ok: false, error: 'Swap execution is disabled' });
-    }
-    const result = await executeSwap(input.value);
-
-    res.json({ ok: true, txHash: result.txHash, quote: result.quote });
-  } catch (err) {
-    console.error('[SwapSidecar] Swap execution failed');
-    res.status(502).json({ ok: false, error: 'Swap execution failed' });
-  }
+app.post('/api/swap', requireSidecarToken, (req, res) => {
+  res.status(410).json({ ok: false, error: 'Swap execution is disabled in the Arc mainnet release' });
 });
 
 app.use((error, req, res, next) => {

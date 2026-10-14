@@ -37,8 +37,9 @@ app:
   url: "https://rovapay.xyz"
 
 vault:
-  strategy: "smart_contract" # On-chain Timelocked Storage Vault contract (RovaSavingsVault.sol)
-  address: "0x9330DA5152Cc676a029cfaCCcA3948e11EDE9BfB"
+  # Fund-moving vault execution is outside this mainnet release.
+  strategy: "disabled"
+  address: ""
 
 balance:
   # Balance monitoring mode:
@@ -48,25 +49,24 @@ balance:
   poll_interval_sec: 180
 
 arc:
-  rpc_url: "https://arc-testnet.drpc.org"
+  rpc_url: "https://rpc.mainnet.arc.io"
   rpc_urls:
-    - "https://arc-testnet.drpc.org"
-    - "https://rpc.testnet.arc.network"
+    - "https://rpc.mainnet.arc.io"
+    - "https://rpc.drpc.mainnet.arc.io"
   wss_urls:
-    - "wss://arc-testnet.drpc.org"
-    - "wss://rpc.testnet.arc.network"
-  chain_id: 5042002
-  execution_log_address: "0x58d1e3e11C7a93cb26C371B115f2710aF68d427a"
+    - "wss://rpc.mainnet.arc.io"
+    - "wss://rpc.drpc.mainnet.arc.io"
+  chain_id: 5042
+  # Populate only after the owner deploys RovaExecutionLog and verifies the address.
+  execution_log_address: ""
   usdc_address: "0x3600000000000000000000000000000000000000"
-  eurc_address: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+  eurc_address: "0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1"
 
 swap:
-  # Swap strategy options:
-  #   "sidecar_uds"    - Authenticated Unix Domain Socket Node.js sidecar (Circle SwapKit)
-  #   "smart_contract" - Uniswap-style Swap Router smart contract (RovaSwapRouter.sol)
-  strategy: "sidecar_uds"
+  # Fund-moving swap execution is outside this mainnet release.
+  strategy: "disabled"
   sidecar_socket: "/tmp/rova-swap.sock"
-  router_address: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
+  router_address: ""
   slippage_bps: 50
   enable_fallback: false
 
