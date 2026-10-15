@@ -28,6 +28,7 @@ type AgentRule struct {
 	ID                  string      `json:"id"`
 	CreatedAt           time.Time   `json:"createdAt"`
 	Status              RuleStatus  `json:"status"`
+	OwnerEmail          string      `json:"ownerEmail"`
 	RecipientLabel      string      `json:"recipientLabel"`
 	RecipientIdentifier string      `json:"recipientIdentifier"`
 	Amount              float64     `json:"amount"`
@@ -41,7 +42,7 @@ type AgentRule struct {
 }
 
 type StandingIntentTrigger struct {
-	Type          string `json:"type"` // "on_receive" or "recurring"
+	Type          string  `json:"type"` // "on_receive" or "recurring"
 	MinAmountUsdc float64 `json:"minAmountUsdc,omitempty"`
 	Interval      string  `json:"interval,omitempty"`
 }
@@ -54,19 +55,20 @@ type StandingIntentPlanStep struct {
 }
 
 type StandingIntent struct {
-	ID               string                `json:"id"`
-	CreatedAt        time.Time             `json:"createdAt"`
-	Status           RuleStatus            `json:"status"`
-	IntentText       string                `json:"intentText"`
+	ID               string                 `json:"id"`
+	CreatedAt        time.Time              `json:"createdAt"`
+	Status           RuleStatus             `json:"status"`
+	OwnerEmail       string                 `json:"ownerEmail"`
+	IntentText       string                 `json:"intentText"`
 	Plan             StandingIntentPlanStep `json:"plan"`
 	Trigger          StandingIntentTrigger  `json:"trigger"`
-	CustodyMode      CustodyMode           `json:"custodyMode"`
-	SourceWallet     string                `json:"sourceWallet"`
-	LastKnownBalance float64               `json:"lastKnownBalance"`
-	LastRunAt        *time.Time            `json:"lastRunAt,omitempty"`
-	RunCount         int                   `json:"runCount"`
-	NotifyPhone      string                `json:"notifyPhone,omitempty"`
-	SourceChannel    string                `json:"sourceChannel,omitempty"`
+	CustodyMode      CustodyMode            `json:"custodyMode"`
+	SourceWallet     string                 `json:"sourceWallet"`
+	LastKnownBalance *float64               `json:"lastKnownBalance,omitempty"`
+	LastRunAt        *time.Time             `json:"lastRunAt,omitempty"`
+	RunCount         int                    `json:"runCount"`
+	NotifyPhone      string                 `json:"notifyPhone,omitempty"`
+	SourceChannel    string                 `json:"sourceChannel,omitempty"`
 }
 
 type QuoteResult struct {
@@ -83,12 +85,14 @@ type QuoteShopResult struct {
 }
 
 type ExecutionRecord struct {
-	ID              string           `json:"id"`
-	RuleID          string           `json:"ruleId"`
-	FiredAt         time.Time        `json:"firedAt"`
-	RateAtExecution float64          `json:"rateAtExecution"`
-	TxHash          string           `json:"txHash"`
-	ArcScanURL      string           `json:"arcScanUrl"`
-	Memo            string           `json:"memo"`
-	QuoteShop       *QuoteShopResult `json:"quoteShop,omitempty"`
+	ID               string           `json:"id"`
+	OwnerEmail       string           `json:"ownerEmail"`
+	RuleID           string           `json:"ruleId,omitempty"`
+	StandingIntentID string           `json:"standingIntentId,omitempty"`
+	FiredAt          time.Time        `json:"firedAt"`
+	RateAtExecution  float64          `json:"rateAtExecution"`
+	TxHash           string           `json:"txHash"`
+	ArcScanURL       string           `json:"arcScanUrl"`
+	Memo             string           `json:"memo"`
+	QuoteShop        *QuoteShopResult `json:"quoteShop,omitempty"`
 }

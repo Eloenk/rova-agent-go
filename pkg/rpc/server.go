@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/chain"
 	"rova-agent-go/pkg/config"
 )
+
+const maxRPCBodyBytes = 1 << 20
 
 type JSONRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -52,9 +55,17 @@ func (s *RPCServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRPCBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
 	var req JSONRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decoder.Decode(&req); err != nil {
 		sendError(w, nil, -32700, "Parse error: Invalid JSON")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		sendError(w, req.ID, -32600, "Invalid Request: exactly one JSON object is required")
 		return
 	}
 

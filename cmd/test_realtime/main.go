@@ -1,63 +1,28 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"strings"
 	"time"
 
 	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/config"
 )
 
-func loadEnvFile(path string) {
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			val := strings.TrimSpace(parts[1])
-			val = strings.Trim(val, "\r\n\"'")
-			val = strings.TrimSpace(val)
-			if os.Getenv(key) == "" {
-				os.Setenv(key, val)
-			}
-		}
-	}
-}
-
 func main() {
 	fmt.Println("===================================================")
 	fmt.Println("   Rova Go — Supabase Realtime WSS Test Suite     ")
 	fmt.Println("===================================================")
 
-	loadEnvFile(".env.local")
-	loadEnvFile(".env")
-	loadEnvFile("../rova/.env.local")
-	loadEnvFile("../rova/.env")
-
 	cfg := config.LoadConfig()
-	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRoleKey == "" {
-		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing!")
+	if cfg.SupabaseURL == "" || cfg.SupabaseSecretKey == "" {
+		log.Fatalf("❌ ERROR: SUPABASE_URL or SUPABASE_SECRET_KEY is missing!")
 	}
 
-	fmt.Printf("✔ Loaded Supabase URL: %s\n", cfg.SupabaseURL)
-	fmt.Println("✔ Loaded Supabase service credentials\n")
+	fmt.Println("✔ Supabase configuration is present")
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseSecretKey, cfg.SupabasePublishableKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

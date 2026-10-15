@@ -4,9 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -18,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -26,6 +27,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	_ "modernc.org/sqlite"
 
 	"rova-agent-go/pkg/agent"
 	"rova-agent-go/pkg/ai"
@@ -135,11 +137,11 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 		if senderJID.Server == "lid" {
 			pnJID, err := b.Client.Store.LIDs.GetPNForLID(context.Background(), senderJID)
 			if err == nil && !pnJID.IsEmpty() {
-				log.Printf("[MeowBot] Resolved LID %s → phone JID %s", senderJID.String(), pnJID.String())
+				log.Printf("[MeowBot] Resolved linked-device identity")
 				senderPhone = pnJID.User
 				senderJID = pnJID // Use phone-based JID for replies too
 			} else {
-				log.Printf("[MeowBot] WARNING: Could not resolve LID %s to phone number (err: %v). User lookup may fail.", senderJID.String(), err)
+				log.Printf("[MeowBot] WARNING: Could not resolve linked-device identity: %v", err)
 			}
 		}
 
@@ -148,7 +150,7 @@ func (b *MeowBot) handleEvent(evt interface{}) {
 			return
 		}
 
-		log.Printf("[MeowBot] Inbound 1-on-1 message from %s (%d characters)", senderPhone, len(text))
+		log.Printf("[MeowBot] Inbound one-to-one message received (%d characters)", len(text))
 		go b.processIncomingCommand(context.Background(), senderJID, senderPhone, text)
 	}
 }
@@ -164,43 +166,52 @@ type supabaseUserRecord struct {
 }
 
 func (b *MeowBot) checkUserRegistered(phone string) (*supabaseUserRecord, bool) {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
-		log.Printf("[MeowBot] Supabase service credentials are unconfigured. Rejecting access for phone: %s", phone)
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseSecretKey == "" {
+		log.Printf("[MeowBot] Supabase service credentials are unconfigured; rejecting access")
 		return nil, false
 	}
 
-	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimLeft(phone, "+"), "-", ""), " ", "")
-	queryURL := fmt.Sprintf("%s/rest/v1/users?select=id,email,circle_wallet_address,savings_wallet_address,whatsapp_number&or=(whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s)",
-		b.Config.SupabaseURL, cleanPhone, cleanPhone)
+	cleanPhone, valid := normalizePhone(phone)
+	if !valid {
+		return nil, false
+	}
+	queryURL, err := buildSupabaseURL(b.Config.SupabaseURL, "users", url.Values{
+		"select": {"id,email,circle_wallet_address,savings_wallet_address,whatsapp_number"},
+		"or":     {fmt.Sprintf("(whatsapp_number.eq.%s,whatsapp_number.eq.+%s)", cleanPhone, cleanPhone)},
+	})
+	if err != nil {
+		log.Println("[MeowBot] Supabase user lookup configuration error")
+		return nil, false
+	}
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
-		log.Printf("[MeowBot] Supabase request creation error: %v", err)
+		log.Println("[MeowBot] Supabase user lookup request creation failed")
 		return nil, false
 	}
-	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("apikey", b.Config.SupabaseSecretKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseSecretKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[MeowBot] Supabase user check HTTP error: %v", err)
+		log.Println("[MeowBot] Supabase user lookup request failed")
 		return nil, false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		log.Printf("[MeowBot] Supabase user check returned HTTP status %d for phone %s", resp.StatusCode, phone)
+		log.Printf("[MeowBot] Supabase user check returned HTTP status %d", resp.StatusCode)
 		return nil, false
 	}
 
 	var users []supabaseUserRecord
-	if err := json.NewDecoder(resp.Body).Decode(&users); err == nil && len(users) > 0 {
-		log.Printf("[MeowBot] User lookup for %s: REGISTERED (User ID: %s, Email: %s)", phone, users[0].ID, users[0].Email)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&users); err == nil && len(users) > 0 {
+		log.Printf("[MeowBot] Registered user lookup succeeded")
 		return &users[0], true
 	}
 
-	log.Printf("[MeowBot] User lookup for %s: UNREGISTERED (0 records found in Supabase)", phone)
+	log.Printf("[MeowBot] User lookup returned no registered account")
 	return nil, false
 }
 
@@ -210,37 +221,50 @@ func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
 		return "", fmt.Errorf("recipient identifier is empty")
 	}
 
-	if strings.HasPrefix(clean, "0x") && len(clean) == 42 {
+	if common.IsHexAddress(clean) {
 		return clean, nil
 	}
 
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
-		return "", fmt.Errorf("database unconfigured; unable to resolve recipient %s", clean)
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseSecretKey == "" {
+		return "", fmt.Errorf("database is unavailable")
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	var queryURL string
+	var err error
 
 	if strings.Contains(clean, "@") {
 		cleanEmail := strings.ToLower(clean)
-		queryURL = fmt.Sprintf("%s/rest/v1/users?select=circle_wallet_address&email=eq.%s&limit=1",
-			b.Config.SupabaseURL, cleanEmail)
+		queryURL, err = buildSupabaseURL(b.Config.SupabaseURL, "users", url.Values{
+			"select": {"circle_wallet_address"},
+			"email":  {"eq." + cleanEmail},
+			"limit":  {"1"},
+		})
 	} else {
-		cleanPhone := strings.ReplaceAll(strings.ReplaceAll(strings.TrimLeft(clean, "+"), "-", ""), " ", "")
-		queryURL = fmt.Sprintf("%s/rest/v1/users?select=circle_wallet_address&or=(whatsapp_number.eq.%s,whatsapp_number.eq.%%2B%s)&limit=1",
-			b.Config.SupabaseURL, cleanPhone, cleanPhone)
+		cleanPhone, valid := normalizePhone(clean)
+		if !valid {
+			return "", fmt.Errorf("recipient identifier is invalid")
+		}
+		queryURL, err = buildSupabaseURL(b.Config.SupabaseURL, "users", url.Values{
+			"select": {"circle_wallet_address"},
+			"or":     {fmt.Sprintf("(whatsapp_number.eq.%s,whatsapp_number.eq.+%s)", cleanPhone, cleanPhone)},
+			"limit":  {"1"},
+		})
+	}
+	if err != nil {
+		return "", fmt.Errorf("recipient lookup configuration is invalid")
 	}
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create query for recipient %s: %v", clean, err)
+		return "", fmt.Errorf("failed to create recipient lookup request")
 	}
-	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("apikey", b.Config.SupabaseSecretKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseSecretKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("recipient lookup HTTP error: %v", err)
+		return "", fmt.Errorf("recipient lookup request failed")
 	}
 	defer resp.Body.Close()
 
@@ -252,88 +276,120 @@ func (b *MeowBot) resolveRecipientAddress(recipient string) (string, error) {
 		CircleWalletAddress string `json:"circle_wallet_address"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&users); err == nil && len(users) > 0 && users[0].CircleWalletAddress != "" {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&users); err == nil && len(users) > 0 && common.IsHexAddress(users[0].CircleWalletAddress) {
 		return users[0].CircleWalletAddress, nil
 	}
 
-	return "", fmt.Errorf("no registered Rova wallet found for recipient '%s'", clean)
+	return "", fmt.Errorf("no registered Rova wallet found for recipient")
 }
 
 func (b *MeowBot) bindUserWithToken(phone, token string) (string, bool) {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseSecretKey == "" {
+		return "", false
+	}
+	cleanPhone, valid := normalizePhone(phone)
+	if !valid {
 		return "", false
 	}
 
 	cleanToken := strings.TrimSpace(token)
 	tokenHash := sha256.Sum256([]byte(cleanToken))
-	queryURL := fmt.Sprintf("%s/rest/v1/whatsapp_link_tokens?select=email,expires_at&token_hash=eq.%s&limit=1",
-		b.Config.SupabaseURL, hex.EncodeToString(tokenHash[:]))
-
-	req, err := http.NewRequest("GET", queryURL, nil)
+	queryURL, err := buildSupabaseURL(b.Config.SupabaseURL, "whatsapp_link_tokens", url.Values{
+		"select":     {"email,expires_at"},
+		"token_hash": {"eq." + hex.EncodeToString(tokenHash[:])},
+	})
 	if err != nil {
 		return "", false
 	}
-	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
+
+	req, err := http.NewRequest("DELETE", queryURL, nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("apikey", b.Config.SupabaseSecretKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseSecretKey)
+	req.Header.Set("Prefer", "return=representation")
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode >= 400 {
+	if err != nil {
 		return "", false
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", false
+	}
 
 	var records []struct {
 		Email     string `json:"email"`
 		ExpiresAt string `json:"expires_at"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&records); err != nil || len(records) == 0 {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&records); err != nil || len(records) == 0 {
 		return "", false
 	}
 
 	record := records[0]
-	if t, err := time.Parse(time.RFC3339, record.ExpiresAt); err == nil {
-		if time.Now().After(t) {
-			log.Printf("[MeowBot] WhatsApp link token expired at %v", t)
+	expiresAt, err := time.Parse(time.RFC3339, record.ExpiresAt)
+	if err != nil || time.Now().After(expiresAt) || record.Email == "" {
+		log.Printf("[MeowBot] WhatsApp link token is invalid or expired")
+		return "", false
+	}
+
+	formattedPhone := "+" + cleanPhone
+	updateBody, err := json.Marshal(map[string]string{
+		"whatsapp_number": formattedPhone,
+	})
+	if err != nil {
+		return "", false
+	}
+
+	updateURL, err := buildSupabaseURL(b.Config.SupabaseURL, "users", url.Values{"email": {"eq." + record.Email}})
+	if err != nil {
+		return "", false
+	}
+	patchReq, err := http.NewRequest("PATCH", updateURL, strings.NewReader(string(updateBody)))
+	if err != nil {
+		return "", false
+	}
+	patchReq.Header.Set("apikey", b.Config.SupabaseSecretKey)
+	patchReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseSecretKey)
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("Prefer", "return=minimal")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		return "", false
+	}
+	patchResp.Body.Close()
+	if patchResp.StatusCode >= 400 {
+		return "", false
+	}
+
+	log.Printf("[MeowBot] WhatsApp account link completed")
+	return record.Email, true
+}
+
+func buildSupabaseURL(baseURL, resource string, query url.Values) (string, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid Supabase URL")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/rest/v1/" + resource
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+func normalizePhone(phone string) (string, bool) {
+	clean := strings.NewReplacer("+", "", "-", "", " ", "", "(", "", ")", "").Replace(strings.TrimSpace(phone))
+	if len(clean) < 7 || len(clean) > 15 {
+		return "", false
+	}
+	for _, character := range clean {
+		if character < '0' || character > '9' {
 			return "", false
 		}
 	}
-
-	cleanPhone := strings.TrimPrefix(phone, "+")
-	formattedPhone := "+" + cleanPhone
-
-	// Update Supabase users table for this user email (ONLY use whatsapp_number column)
-	updateBody, _ := json.Marshal(map[string]string{
-		"whatsapp_number": formattedPhone,
-	})
-
-	escapedEmail := url.QueryEscape(record.Email)
-	updateURL := fmt.Sprintf("%s/rest/v1/users?email=eq.%s", b.Config.SupabaseURL, escapedEmail)
-	patchReq, err := http.NewRequest("PATCH", updateURL, strings.NewReader(string(updateBody)))
-	if err == nil {
-		patchReq.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-		patchReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
-		patchReq.Header.Set("Content-Type", "application/json")
-		patchReq.Header.Set("Prefer", "return=minimal")
-		if patchResp, err := client.Do(patchReq); err == nil {
-			log.Printf("[MeowBot] Supabase PATCH response status: %d", patchResp.StatusCode)
-			patchResp.Body.Close()
-		}
-	}
-
-	deleteURL := fmt.Sprintf("%s/rest/v1/whatsapp_link_tokens?email=eq.%s", b.Config.SupabaseURL, escapedEmail)
-	delReq, err := http.NewRequest("DELETE", deleteURL, nil)
-	if err == nil {
-		delReq.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-		delReq.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
-		if delResp, err := client.Do(delReq); err == nil {
-			delResp.Body.Close()
-		}
-	}
-
-	log.Printf("[MeowBot] Bound phone %s to user %s", formattedPhone, record.Email)
-	return record.Email, true
+	return clean, true
 }
 
 func (b *MeowBot) queuePendingAction(jid string, action pendingAction) (string, error) {
@@ -387,7 +443,7 @@ func (b *MeowBot) executePendingAction(ctx context.Context, jid types.JID, actio
 	case "bridge":
 		txHash, err = b.CircleClient.BridgeCCTPWithWallet(ctx, action.WalletAddress, action.WalletAddress, action.DestinationChain, action.Amount)
 	case "save":
-		txHash, err = b.CircleClient.DepositSavingsVault(ctx, action.WalletAddress, action.WalletAddress, action.Amount)
+		txHash, err = b.CircleClient.DepositSavingsVault(ctx, action.WalletAddress, action.Amount)
 	case "redeem":
 		txHash, err = b.CircleClient.RedeemSavingsVault(ctx, action.WalletAddress, action.DepositID)
 	default:
@@ -401,11 +457,11 @@ func (b *MeowBot) executePendingAction(ctx context.Context, jid types.JID, actio
 		return
 	}
 
-	b.replyText(jid, fmt.Sprintf("✅ *Rova Action Complete*\n\n• *Action*: %s\n• *Tx Hash*: `%s`\n\nhttps://testnet.arcscan.app/tx/%s", strings.ToUpper(action.Action), txHash, txHash))
+	b.replyText(jid, fmt.Sprintf("✅ *Rova Action Complete*\n\n• *Action*: %s\n• *Tx Hash*: `%s`\n\nhttps://explorer.arc.io/tx/%s", strings.ToUpper(action.Action), txHash, txHash))
 }
 
 func (b *MeowBot) executionAvailable() bool {
-	return b.Config != nil && b.Config.ExecutionEnabled && b.Config.WhatsAppExecutionEnabled
+	return b.Config != nil && b.Config.ChainID != config.ArcMainnetChainID && b.Config.ExecutionEnabled && b.Config.WhatsAppExecutionEnabled
 }
 
 func isFundMovingAction(action string) bool {
@@ -428,20 +484,28 @@ func parseDepositID(text string) (int64, bool) {
 }
 
 func (b *MeowBot) getUserRulesStatus(phone string) string {
-	if b.Config.SupabaseURL == "" || b.Config.SupabaseServiceRoleKey == "" {
+	if b.Config.SupabaseURL == "" || b.Config.SupabaseSecretKey == "" {
 		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
 	}
 
-	cleanPhone := strings.TrimPrefix(phone, "+")
-	queryURL := fmt.Sprintf("%s/rest/v1/agent_rules?select=id,pair,trigger_type,trigger_value,amount,status&notify_phone=eq.%%2B%s",
-		b.Config.SupabaseURL, cleanPhone)
+	cleanPhone, valid := normalizePhone(phone)
+	if !valid {
+		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
+	}
+	queryURL, err := buildSupabaseURL(b.Config.SupabaseURL, "agent_rules", url.Values{
+		"select":       {"id,pair,trigger_type,trigger_value,amount,status"},
+		"notify_phone": {"eq.+" + cleanPhone},
+	})
+	if err != nil {
+		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
+	}
 
 	req, err := http.NewRequest("GET", queryURL, nil)
 	if err != nil {
 		return "🎯 *Rova Target Rate Watchers*\n\n_No active FX target orders right now._"
 	}
-	req.Header.Set("apikey", b.Config.SupabaseServiceRoleKey)
-	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseServiceRoleKey)
+	req.Header.Set("apikey", b.Config.SupabaseSecretKey)
+	req.Header.Set("Authorization", "Bearer "+b.Config.SupabaseSecretKey)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -459,7 +523,7 @@ func (b *MeowBot) getUserRulesStatus(phone string) string {
 		Status       string  `json:"status"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&rules); err == nil && len(rules) > 0 {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rules); err == nil && len(rules) > 0 {
 		var sb strings.Builder
 		sb.WriteString("🎯 *Your Active FX Rate Targets*\n\n")
 		for _, r := range rules {
@@ -512,9 +576,9 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 				"✅ *WhatsApp Line Linked Successfully!*\n\n"+
 					"• *Account*: %s\n"+
 					"• *Phone*: %s\n"+
-					"• *Network*: Arc Testnet\n\n"+
-					"You can now manage your wallet and execute transactions directly in this chat!\n\n"+
-					"Type *\"balance\"*, *\"status\"*, or *\"send 10 USDC to 0x...\"* to start.",
+					"• *Network*: Arc Mainnet\n\n"+
+					"You can now inspect your wallet and prepare transaction plans in this chat.\n\n"+
+					"Type *\"balance\"* or *\"status\"* to start.",
 				userEmail, displayPhone,
 			)
 			b.replyText(jid, reply)
@@ -621,7 +685,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 	}
 
-	log.Printf("[MeowBot] AI Parsed Action: %s, Amount: %.2f, Recipient: %s, Reasoning: %s", parsed.Action, parsed.Amount, parsed.Recipient, parsed.Reasoning)
+	log.Printf("[MeowBot] AI parsed an action of type %s", parsed.Action)
 
 	if boundWallet == "" && userRecord != nil {
 		boundWallet = userRecord.CircleWalletAddress
@@ -651,8 +715,8 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 			"💰 *Your Balances*\n\n"+
 				"• *USDC*: %.2f\n"+
 				"• *EURC*: %.2f\n\n"+
-				"🌐 *Network*: Arc Testnet\n"+
-				"🔗 *Explorer*: https://testnet.arcscan.app/address/%s",
+				"🌐 *Network*: Arc Mainnet\n"+
+				"🔗 *Explorer*: https://explorer.arc.io/address/%s",
 			usdcBal, eurcBal, boundWallet,
 		)
 		b.replyText(jid, reply)
@@ -675,7 +739,7 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 
 		resolvedWallet, err := b.resolveRecipientAddress(targetRecipient)
 		if err != nil {
-			log.Printf("[MeowBot Error] Recipient lookup failed for %s: %v", targetRecipient, err)
+			log.Printf("[MeowBot Error] Recipient lookup failed: %v", err)
 			b.replyText(jid, "❌ *Recipient Not Found*: The specified recipient is not registered on Rova or the address is invalid. Please double check and try again.")
 			return
 		}
@@ -759,10 +823,10 @@ func (b *MeowBot) processIncomingCommand(ctx context.Context, jid types.JID, pho
 		}
 
 		confirmationCode, err := b.queuePendingAction(jidKey, pendingAction{
-			Action:        "bridge",
-			WalletAddress: boundWallet,
+			Action:           "bridge",
+			WalletAddress:    boundWallet,
 			DestinationChain: destinationChain,
-			Amount:        bridgeAmount,
+			Amount:           bridgeAmount,
 		})
 		if err != nil {
 			log.Printf("[MeowBot] Failed to prepare bridge confirmation: %v", err)
@@ -861,10 +925,10 @@ func (b *MeowBot) SendMessageToPhone(phone, text string) error {
 func (b *MeowBot) SendExecutionReport(phone string, opts agent.NotificationOpts) error {
 	var text strings.Builder
 	text.WriteString("🤖 *Rova Agent Execution Report (Go Engine)*\n\n")
-	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc Testnet\n"))
+	text.WriteString(fmt.Sprintf("✅ *Status*: Executed via Go-Ethereum on Arc\n"))
 	text.WriteString(fmt.Sprintf("💸 *Transfer*: %.2f USDC → `%s`\n", opts.Amount, opts.Recipient))
 	text.WriteString(fmt.Sprintf("📊 *Executed FX Rate*: %.4f %s\n", opts.Rate, opts.Pair))
-	text.WriteString(fmt.Sprintf("🏷️ *Goroutine Nanopayments*: Selected *%s* out of %d quotes.\n", opts.BestProvider, opts.ProvidersChecked))
+	text.WriteString(fmt.Sprintf("🏷️ *Quote Comparison*: Selected *%s* out of %d provider quotes.\n", opts.BestProvider, opts.ProvidersChecked))
 	if opts.Memo != "" {
 		text.WriteString(fmt.Sprintf("📝 *Memo*: %s\n", opts.Memo))
 	}
@@ -892,12 +956,12 @@ func (b *MeowBot) replyText(jid types.JID, text string) {
 		Conversation: &text,
 	})
 	if err != nil {
-		log.Printf("[MeowBot] Error sending message to %s: %v", jid.String(), err)
+		log.Printf("[MeowBot] Error sending message: %v", err)
 	}
 }
 
 func RunMeowBotService(cfg *config.Config) error {
-	if err := cfg.ValidateDatabaseAccess(); err != nil {
+	if err := cfg.ValidateWhatsAppService(); err != nil {
 		return err
 	}
 
@@ -919,7 +983,7 @@ func RunMeowBotService(cfg *config.Config) error {
 		log.Printf("[MeowBot] Warning: Failed to init ChainClient for Watcher: %v", err)
 	}
 
-	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey)
+	store := agent.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseSecretKey, cfg.SupabasePublishableKey)
 	shopper := nanopay.NewShopper()
 	interval := time.Duration(cfg.BalancePollInterval) * time.Second
 	if interval <= 0 {

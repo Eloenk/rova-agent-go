@@ -2,12 +2,20 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"rova-agent-go/pkg/chain"
 	"rova-agent-go/pkg/config"
 )
 
 func main() {
+	walletFlag := flag.String("wallet", "", "Arc wallet address to query")
+	flag.Parse()
+	if *walletFlag == "" {
+		fmt.Println("Usage: go run ./cmd/test-eurc -wallet 0x...")
+		return
+	}
+
 	cfg := config.LoadConfig()
 	fmt.Println("=== Rova Balance Check Test ===")
 	fmt.Printf("Loaded from config.yaml:\n")
@@ -21,7 +29,7 @@ func main() {
 		return
 	}
 
-	wallet := "0xceb31d6062bf42b77a7a0b0ed682f1738433db8c"
+	wallet := *walletFlag
 	balUsdc, errUsdc := client.GetBalanceUSDCWithFailover(context.Background(), wallet)
 	balEurc, errEurc := client.GetBalanceEURCWithFailover(context.Background(), wallet)
 

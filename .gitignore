@@ -1,7 +1,10 @@
 .env
-.env.local
+.env.*
+!.env.example
 *.exe
 *.db
+*.out
 bin/
+node_modules/
 .agent/
 .agents/

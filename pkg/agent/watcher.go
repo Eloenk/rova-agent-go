@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
 	"rova-agent-go/pkg/chain"
+	"rova-agent-go/pkg/config"
 	"rova-agent-go/pkg/nanopay"
 )
 
@@ -68,6 +70,13 @@ func (w *WatcherEngine) getActiveTargetWallets() []string {
 
 func (w *WatcherEngine) StartWatcher(ctx context.Context) {
 	ticker := time.NewTicker(w.Interval)
+	evaluationRequests := make(chan struct{}, 1)
+	requestEvaluation := func() {
+		select {
+		case evaluationRequests <- struct{}{}:
+		default:
+		}
+	}
 
 	// Mode 0: Initialize Supabase Realtime WebSocket Push Subscription for Rules & Intents
 	if w.Store != nil {
@@ -79,13 +88,15 @@ func (w *WatcherEngine) StartWatcher(ctx context.Context) {
 	if w.ChainClient != nil && w.ChainClient.Config != nil && w.ChainClient.Config.BalanceMode == "wss" {
 		log.Println("[Watcher Engine] Initializing Real-Time WSS Transfer Event Listener for Active Rule Wallets...")
 		w.ChainClient.ListenUSDCTransferEvents(ctx, w.getActiveTargetWallets, func(toAddress string, amount float64, txHash string) {
-			w.handleWSSTransferEvent(ctx, toAddress, amount, txHash)
+			log.Printf("[Watcher Engine] Monitored transfer event received; scheduling a database-claimed balance evaluation")
+			requestEvaluation()
 		})
 	} else {
 		log.Println("[Watcher Engine] Running in Multi-RPC Failover Polling Mode")
 	}
 
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -93,96 +104,60 @@ func (w *WatcherEngine) StartWatcher(ctx context.Context) {
 			case <-ticker.C:
 				w.evaluateRules(ctx)
 				w.evaluateStandingIntents(ctx)
+			case <-evaluationRequests:
+				w.evaluateStandingIntents(ctx)
 			}
 		}
 	}()
 }
 
-func (w *WatcherEngine) handleWSSTransferEvent(ctx context.Context, toAddress string, amount float64, transferTxHash string) {
-	intents := w.Store.ListActiveStandingIntents()
-	for _, intent := range intents {
-		if strings.EqualFold(intent.SourceWallet, toAddress) {
-			if intent.CustodyMode != CustodyManaged || !w.canExecuteAutomatically(0) {
-				log.Printf("[WSS Event Trigger] Standing Intent %s matched but automatic execution is disabled or not managed custody", intent.ID)
-				continue
-			}
-
-			var saveAmount float64
-			if intent.Plan.Percentage > 0 {
-				saveAmount = amount * (intent.Plan.Percentage / 100.0)
-			} else if intent.Plan.Amount > 0 {
-				saveAmount = intent.Plan.Amount
-			} else {
-				saveAmount = amount * 0.10 // Default 10%
-			}
-
-			if saveAmount <= 0 {
-				continue
-			}
-			if !w.canExecuteAutomatically(saveAmount) {
-				log.Printf("[WSS Event Trigger] Standing Intent %s exceeded automatic-execution policy", intent.ID)
-				continue
-			}
-
-			log.Printf("[WSS Event Trigger] Standing Intent %s matched! Transfer: %.2f USDC to %s, Vault Save: %.2f USDC", intent.ID, amount, toAddress, saveAmount)
-
-			var txHash string
-			var err error
-			if w.ChainClient.CircleClient != nil {
-				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, intent.SourceWallet, saveAmount)
-			} else {
-				txHash, err = w.ChainClient.TransferUSDC(ctx, intent.SourceWallet, saveAmount)
-			}
-
-			if err != nil {
-				log.Printf("[WSS Event Trigger] Savings Vault deposit failed: %v", err)
-				continue
-			}
-
-			newRunCount := intent.RunCount + 1
-			w.Store.UpdateStandingIntentState(intent.ID, intent.LastKnownBalance, newRunCount, time.Now())
-
-			arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
-			w.Store.RecordExecution(&ExecutionRecord{
-				ID:         fmt.Sprintf("exec-wss-%d", time.Now().UnixNano()),
-				RuleID:     intent.ID,
-				FiredAt:    time.Now(),
-				TxHash:     txHash,
-				ArcScanURL: arcScanURL,
-				Memo:       fmt.Sprintf("wss-event-exec: 10%% savings deposit for incoming %.2f USDC (Ref Tx: %s)", amount, transferTxHash),
-			})
-
-			if intent.NotifyPhone != "" && w.Notifier != nil {
-				pctStr := ""
-				if intent.Plan.Percentage > 0 {
-					pctStr = fmt.Sprintf(" (%.0f%%)", intent.Plan.Percentage)
-				}
-				msg := fmt.Sprintf(
-					"⚡ *Rova Real-Time WSS Savings Fired! (Go Engine)*\n\n"+
-						"• *Incoming Payment*: %.2f USDC\n"+
-						"• *Saved to Vault*: %.2f USDC%s\n"+
-						"• *Deposit Tx*: `%s`\n\n"+
-						"🔗 *ArcScan Link*:\n%s\n\n"+
-						"_Rova Real-Time Event Listener_",
-					amount, saveAmount, pctStr, txHash, arcScanURL,
-				)
-				w.Notifier.SendMessage(intent.NotifyPhone, msg)
-			}
-		}
+func standingSavingsAmount(intent *StandingIntent, balance float64) (float64, float64, bool) {
+	if intent.LastKnownBalance == nil || intent.Trigger.Type != "on_receive" || !strings.EqualFold(intent.Plan.Action, "save") {
+		return 0, 0, false
 	}
+	usesPercentage := intent.Plan.Percentage > 0 && intent.Plan.Percentage <= 100
+	usesFixedAmount := intent.Plan.Amount > 0
+	if usesPercentage == usesFixedAmount {
+		return 0, 0, false
+	}
+	delta := balance - *intent.LastKnownBalance
+	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+		return 0, 0, false
+	}
+	minimum := intent.Trigger.MinAmountUsdc
+	if minimum <= 0 {
+		minimum = 0.01
+	}
+	if math.IsNaN(minimum) || math.IsInf(minimum, 0) || delta < minimum {
+		return 0, 0, false
+	}
+
+	saveAmount := intent.Plan.Amount
+	if usesPercentage {
+		saveAmount = math.Floor(delta*(intent.Plan.Percentage/100.0)*1e6) / 1e6
+	} else {
+		scaled := math.Round(saveAmount * 1e6)
+		if math.Abs(saveAmount*1e6-scaled) > 1e-6 {
+			return 0, 0, false
+		}
+		saveAmount = scaled / 1e6
+	}
+	if saveAmount <= 0 || saveAmount > delta {
+		return 0, 0, false
+	}
+	return delta, saveAmount, true
 }
 
 func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 	intents := w.Store.ListActiveStandingIntents()
-	if len(intents) == 0 {
-		return
-	}
-
 	for _, intent := range intents {
-		if intent.SourceWallet == "" {
+		if intent.SourceWallet == "" || intent.OwnerEmail == "" {
 			continue
 		}
 		if intent.CustodyMode != CustodyManaged || !w.canExecuteAutomatically(0) {
+			continue
+		}
+		if w.ChainClient.Config.ExecutionMode != "circle" {
 			continue
 		}
 
@@ -191,80 +166,82 @@ func (w *WatcherEngine) evaluateStandingIntents(ctx context.Context) {
 			continue
 		}
 
-		if intent.LastKnownBalance <= 0 {
-			// Set initial baseline
-			w.Store.UpdateStandingIntentState(intent.ID, balance, intent.RunCount, time.Now())
+		if intent.LastKnownBalance == nil {
+			if err := w.Store.UpdateStandingIntentBaseline(ctx, intent.ID, balance); err != nil {
+				log.Printf("[Watcher] Standing intent %s baseline persistence failed", intent.ID)
+			}
 			continue
 		}
 
-		delta := balance - intent.LastKnownBalance
-		minAmount := intent.Trigger.MinAmountUsdc
-		if minAmount <= 0 {
-			minAmount = 0.01
+		_, saveAmount, qualifies := standingSavingsAmount(intent, balance)
+		if !qualifies || !w.canExecuteAutomatically(saveAmount) {
+			continue
 		}
 
-		if delta >= minAmount {
-			// Calculate savings amount based on plan
-			var saveAmount float64
+		claimedIntent, err := w.Store.TryClaimStandingIntent(ctx, intent.ID, intent.OwnerEmail)
+		if err != nil {
+			log.Printf("[Watcher] Standing intent %s claim failed", intent.ID)
+			continue
+		}
+		if claimedIntent == nil {
+			continue
+		}
+		intent = claimedIntent
+
+		log.Printf("[Watcher] Standing intent %s claimed for an approved savings execution", intent.ID)
+		balance, err = w.ChainClient.GetBalanceUSDCWithFailover(ctx, intent.SourceWallet)
+		if err != nil {
+			log.Printf("[Watcher] Standing intent %s balance recheck failed and remains paused", intent.ID)
+			continue
+		}
+		delta, saveAmount, qualifies := standingSavingsAmount(intent, balance)
+		if !qualifies || !w.canExecuteAutomatically(saveAmount) {
+			log.Printf("[Watcher] Standing intent %s no longer satisfies its claimed policy and remains paused", intent.ID)
+			continue
+		}
+		txHash, err := w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, saveAmount)
+		if err != nil {
+			log.Printf("[Watcher] Standing intent %s execution failed and remains paused for review", intent.ID)
+			continue
+		}
+
+		firedAt := time.Now()
+		newRunCount := intent.RunCount + 1
+		newKnownBalance := balance - saveAmount
+		arcScanURL := fmt.Sprintf("https://explorer.arc.io/tx/%s", txHash)
+		memo := fmt.Sprintf("approved savings policy deposited %.2f USDC after a %.2f USDC balance increase", saveAmount, delta)
+		receipt := &ExecutionRecord{
+			OwnerEmail:       intent.OwnerEmail,
+			StandingIntentID: intent.ID,
+			FiredAt:          firedAt,
+			TxHash:           txHash,
+			ArcScanURL:       arcScanURL,
+			Memo:             memo,
+		}
+		if err := w.Store.RecordExecution(ctx, receipt); err != nil {
+			log.Printf("[Watcher] Standing intent %s moved funds but receipt persistence failed; intent remains paused", intent.ID)
+			continue
+		}
+		if err := w.Store.CompleteStandingIntentRun(ctx, intent.ID, newKnownBalance, newRunCount, firedAt); err != nil {
+			log.Printf("[Watcher] Standing intent %s receipt persisted but re-arm failed; intent remains paused", intent.ID)
+			continue
+		}
+
+		if intent.NotifyPhone != "" && w.Notifier != nil {
+			pctStr := ""
 			if intent.Plan.Percentage > 0 {
-				saveAmount = delta * (intent.Plan.Percentage / 100.0)
-			} else if intent.Plan.Amount > 0 {
-				saveAmount = intent.Plan.Amount
-			} else {
-				saveAmount = delta * 0.10 // Default 10%
+				pctStr = fmt.Sprintf(" (%.0f%%)", intent.Plan.Percentage)
 			}
-
-			if saveAmount <= 0 {
-				continue
-			}
-			if !w.canExecuteAutomatically(saveAmount) {
-				log.Printf("[Watcher] Standing Intent %s exceeded automatic-execution policy", intent.ID)
-				continue
-			}
-
-			log.Printf("[Watcher] Standing Intent %s fired! Incoming Delta: %.2f USDC, Savings: %.2f USDC", intent.ID, delta, saveAmount)
-
-			var txHash string
-			if w.ChainClient.CircleClient != nil {
-				txHash, err = w.ChainClient.CircleClient.DepositSavingsVault(ctx, intent.SourceWallet, intent.SourceWallet, saveAmount)
-			} else {
-				txHash, err = w.ChainClient.TransferUSDC(ctx, intent.SourceWallet, saveAmount)
-			}
-
-			if err != nil {
-				log.Printf("[Watcher] Standing intent vault deposit error for %s: %v", intent.ID, err)
-				continue
-			}
-
-			newRunCount := intent.RunCount + 1
-			newKnownBalance := balance - saveAmount
-			w.Store.UpdateStandingIntentState(intent.ID, newKnownBalance, newRunCount, time.Now())
-
-			arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
-			w.Store.RecordExecution(&ExecutionRecord{
-				ID:         fmt.Sprintf("exec-intent-%d", time.Now().UnixNano()),
-				RuleID:     intent.ID,
-				FiredAt:    time.Now(),
-				TxHash:     txHash,
-				ArcScanURL: arcScanURL,
-				Memo:       fmt.Sprintf("auto-exec: 10%% savings vault deposit for incoming %.2f USDC", delta),
-			})
-
-			if intent.NotifyPhone != "" && w.Notifier != nil {
-				pctStr := ""
-				if intent.Plan.Percentage > 0 {
-					pctStr = fmt.Sprintf(" (%.0f%%)", intent.Plan.Percentage)
-				}
-				msg := fmt.Sprintf(
-					"🔒 *Rova Standing Savings Fired! (Go Engine)*\n\n"+
-						"• *Incoming Payment*: %.2f USDC\n"+
-						"• *Saved to Vault*: %.2f USDC%s\n"+
-						"• *Remaining Liquid*: %.2f USDC\n\n"+
-						"🔗 *ArcScan Link*:\n%s\n\n"+
-						"_Rova 24/7 Autonomous Saver_",
-					delta, saveAmount, pctStr, newKnownBalance, arcScanURL,
-				)
-				w.Notifier.SendMessage(intent.NotifyPhone, msg)
+			msg := fmt.Sprintf(
+				"🔒 *Rova Standing Savings Fired! (Go Engine)*\n\n"+
+					"• *Incoming Payment*: %.2f USDC\n"+
+					"• *Saved to Vault*: %.2f USDC%s\n"+
+					"• *Remaining Liquid*: %.2f USDC\n\n"+
+					"🔗 *ArcScan Link*:\n%s",
+				delta, saveAmount, pctStr, newKnownBalance, arcScanURL,
+			)
+			if err := w.Notifier.SendMessage(intent.NotifyPhone, msg); err != nil {
+				log.Printf("[Watcher] Standing intent %s notification failed", intent.ID)
 			}
 		}
 	}
@@ -278,72 +255,97 @@ func (w *WatcherEngine) evaluateRules(ctx context.Context) {
 
 	for _, rule := range activeRules {
 		shopResult := w.Shopper.ShopRates(rule.Pair)
+		if !shopResult.Executable {
+			log.Printf("[Watcher] Rule %s skipped because only simulated quotes are available", rule.ID)
+			continue
+		}
 		bestRate := shopResult.BestRate
 
-		matched := false
-		if rule.TriggerType == TriggerRateGTE && bestRate >= rule.TriggerValue {
-			matched = true
-		} else if rule.TriggerType == TriggerRateLTE && bestRate <= rule.TriggerValue {
-			matched = true
-		}
-
-		if matched {
+		if rateRuleMatches(rule, bestRate) {
 			w.executeMatchedRule(ctx, rule, shopResult)
 		}
 	}
 }
 
+func rateRuleMatches(rule *AgentRule, rate float64) bool {
+	return rule.TriggerType == TriggerRateGTE && rate >= rule.TriggerValue ||
+		rule.TriggerType == TriggerRateLTE && rate <= rule.TriggerValue
+}
+
 func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule, shopResult *nanopay.QuoteShopResult) {
-	if rule.CustodyMode == CustodySelfCustody {
-		w.Store.UpdateRuleStatus(rule.ID, StatusReadyToExecute)
-		if rule.NotifyPhone != "" {
-			w.Notifier.SendApprovalAlert(rule.NotifyPhone, rule.ID, rule.RecipientIdentifier, rule.Amount, shopResult.BestRate)
-		}
+	if rule.OwnerEmail == "" {
+		log.Printf("[Watcher] Rule %s is missing an owner and cannot be claimed", rule.ID)
+		return
+	}
+	if rule.CustodyMode != CustodyManaged {
+		log.Printf("[Watcher] Rule %s requires unavailable self-custody approval and remains active", rule.ID)
 		return
 	}
 	if !w.canExecuteAutomatically(rule.Amount) {
-		w.Store.UpdateRuleStatus(rule.ID, StatusReadyToExecute)
 		log.Printf("[Watcher] Rule %s matched but automatic-execution policy did not permit it", rule.ID)
 		return
 	}
-
-	txHash, err := w.ChainClient.TransferUSDC(ctx, rule.RecipientIdentifier, rule.Amount)
+	claimedRule, err := w.Store.TryClaimRule(ctx, rule.ID, rule.OwnerEmail)
 	if err != nil {
-		log.Printf("[Watcher] USDC Transfer error for rule %s: %v", rule.ID, err)
+		log.Printf("[Watcher] Rule %s claim failed", rule.ID)
+		return
+	}
+	if claimedRule == nil {
+		return
+	}
+	rule = claimedRule
+	if rule.CustodyMode != CustodyManaged || !rateRuleMatches(rule, shopResult.BestRate) || !w.canExecuteAutomatically(rule.Amount) {
+		log.Printf("[Watcher] Rule %s no longer satisfies its claimed policy and remains paused", rule.ID)
 		return
 	}
 
-	memo := fmt.Sprintf("auto-exec: rate %.4f >= target %.4f · shopped %d quotes (%s @ %.4f)",
-		shopResult.BestRate, rule.TriggerValue, shopResult.ProvidersChecked, shopResult.BestProvider, shopResult.BestRate)
-
-	onchainTxHash, err := w.ChainClient.LogExecutionOnchain(ctx, chain.LogExecutionOpts{
-		RuleID:          rule.ID,
-		Recipient:       rule.RecipientIdentifier,
-		AmountUsdc:      rule.Amount,
-		RateAtExecution: shopResult.BestRate,
-		Memo:            memo,
-	})
+	txHash, err := w.ChainClient.TransferUSDCFromWallet(ctx, rule.SourceWallet, rule.RecipientIdentifier, rule.Amount)
 	if err != nil {
-		log.Printf("[Watcher] Onchain execution log error: %v", err)
+		log.Printf("[Watcher] Rule %s execution failed and remains paused for review", rule.ID)
+		return
 	}
 
-	w.Store.UpdateRuleStatus(rule.ID, StatusFired)
-	arcScanURL := fmt.Sprintf("https://testnet.arcscan.app/tx/%s", txHash)
+	operator := ">="
+	if rule.TriggerType == TriggerRateLTE {
+		operator = "<="
+	}
+	memo := fmt.Sprintf("approved rate policy executed at %.4f %s target %.4f after %d verified quotes",
+		shopResult.BestRate, operator, rule.TriggerValue, shopResult.ProvidersChecked)
 
-	w.Store.RecordExecution(&ExecutionRecord{
-		ID:              fmt.Sprintf("exec-%d", time.Now().UnixNano()),
+	firedAt := time.Now()
+	arcScanURL := fmt.Sprintf("https://explorer.arc.io/tx/%s", txHash)
+	receipt := &ExecutionRecord{
+		OwnerEmail:      rule.OwnerEmail,
 		RuleID:          rule.ID,
-		FiredAt:         time.Now(),
+		FiredAt:         firedAt,
 		RateAtExecution: shopResult.BestRate,
 		TxHash:          txHash,
 		ArcScanURL:      arcScanURL,
 		Memo:            memo,
-	})
+	}
+	if err := w.Store.RecordExecution(ctx, receipt); err != nil {
+		log.Printf("[Watcher] Rule %s moved funds but receipt persistence failed; rule remains paused", rule.ID)
+		return
+	}
+	if err := w.Store.UpdateRuleStatus(ctx, rule.ID, StatusFired); err != nil {
+		log.Printf("[Watcher] Rule %s receipt persisted but final status update failed", rule.ID)
+		return
+	}
 
-	log.Printf("[Watcher] Rule %s FIRED: %s, OnchainLog: %s", rule.ID, txHash, onchainTxHash)
+	log.Printf("[Watcher] Rule %s executed and receipt references were persisted", rule.ID)
+	if _, err := w.ChainClient.LogExecutionOnchain(ctx, chain.LogExecutionOpts{
+		RuleID:          rule.ID,
+		SourceWallet:    rule.SourceWallet,
+		Recipient:       rule.RecipientIdentifier,
+		AmountUsdc:      rule.Amount,
+		RateAtExecution: shopResult.BestRate,
+		Memo:            memo,
+	}); err != nil {
+		log.Printf("[Watcher] Rule %s on-chain audit-log write failed", rule.ID)
+	}
 
 	if rule.NotifyPhone != "" && w.Notifier != nil {
-		w.Notifier.SendExecutionReport(rule.NotifyPhone, NotificationOpts{
+		if err := w.Notifier.SendExecutionReport(rule.NotifyPhone, NotificationOpts{
 			Recipient:        rule.RecipientIdentifier,
 			Amount:           rule.Amount,
 			Pair:             rule.Pair,
@@ -353,12 +355,20 @@ func (w *WatcherEngine) executeMatchedRule(ctx context.Context, rule *AgentRule,
 			TxHash:           txHash,
 			ArcScanURL:       arcScanURL,
 			Memo:             memo,
-		})
+		}); err != nil {
+			log.Printf("[Watcher] Rule %s execution notification failed", rule.ID)
+		}
 	}
 }
 
 func (w *WatcherEngine) canExecuteAutomatically(amount float64) bool {
 	if w.ChainClient == nil || w.ChainClient.Config == nil || !w.ChainClient.Config.ExecutionEnabled || !w.ChainClient.Config.AutonomousExecutionEnabled {
+		return false
+	}
+	if w.ChainClient.Config.ChainID == config.ArcMainnetChainID {
+		return false
+	}
+	if w.ChainClient.Config.ExecutionMode != "circle" {
 		return false
 	}
 	if amount == 0 {
